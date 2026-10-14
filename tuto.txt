@@ -1,0 +1,190 @@
+JELLYFIN PS2 - HOW TO SET UP settings.txt
+=========================================
+
+settings.txt tells Jellyfin PS2 where your Jellyfin server is and how the
+PS2 joins your network. You write it on a computer, then copy it to the
+USB stick.
+
+
+1. WHERE TO PUT IT
+------------------
+
+Put settings.txt in the same folder as the Jellyfin PS2 ELF. For
+example:
+
+    mass:/APPS/JFPS2/jfps2.elf
+    mass:/APPS/JFPS2/settings.txt
+
+The file is optional. Without it, the PS2 asks your router for an
+address, and you type the server address once on the connect screen.
+The app then creates settings.txt for you and remembers the server, and
+later the users who sign in (see section 7).
+
+
+2. HOW THE FILE IS WRITTEN
+--------------------------
+
+One setting per line, written as  name=value  for example:
+
+    server=192.168.0.20:8096
+
+- Lines starting with # are comments and are ignored.
+- Blank lines are ignored.
+- Spaces around = are fine, and upper or lower case does not matter.
+- A setting you leave out uses its default.
+- Put comments on their own line, not at the end of a setting.
+
+
+3. THE SETTINGS
+---------------
+
+server
+    Your Jellyfin server's address and port, e.g. 192.168.0.20:8096
+    Use the IP address of the computer running Jellyfin, not a name.
+    http:// is optional. HTTPS is not supported.
+    8096 is Jellyfin's usual port.
+    Default: none, the connect screen asks for it.
+
+network
+    How the PS2 gets its own address:
+      dhcp    Ask the router. The usual choice on a home network.
+      static  Use the ip, mask and gateway lines below. Needed when the
+              PS2 is cabled straight to a computer, with no router.
+      auto    Ask the router for 5 seconds, then use the static lines if
+              no router answers. Handy if you move the PS2 between a
+              router and a direct cable. Without an ip line, auto works
+              exactly like dhcp.
+    Default: auto
+
+ip
+    The PS2's own address, for static (or auto's fallback).
+    Pick a free address on the same network as the server: if the
+    server is 192.168.50.1, use 192.168.50.something, not taken by
+    another device.
+
+mask
+    The network mask. Default: 255.255.255.0 (right for almost every
+    home network).
+
+gateway
+    Usually your router's address. Default: the server's address, which
+    is right for a direct cable.
+
+video
+    480i or 480p. Default: 480i.
+    480p is not used yet. When it is, the app will always start in
+    480i and ask you to confirm 480p, so you can never get stuck with a
+    black screen.
+
+4. EXAMPLES
+-----------
+
+A) PS2 and server on a home router (most people):
+
+    server=192.168.0.20:8096
+    network=dhcp
+
+B) PS2 cabled straight to the computer running Jellyfin:
+
+    server=192.168.50.1:8096
+    network=static
+    ip=192.168.50.90
+    mask=255.255.255.0
+    gateway=192.168.50.1
+
+   The computer needs a fixed address on that cable too, e.g. on a Mac:
+     sudo networksetup -setmanual "<your Ethernet adapter>" 192.168.50.1 255.255.255.0
+
+C) Sometimes on a router, sometimes on a direct cable:
+
+    server=192.168.50.1:8096
+    network=auto
+    ip=192.168.50.90
+
+   Note: the server's address usually differs between the two setups,
+   so you may still need to change the server line when you move.
+
+Tip: on a router, ask it to always give the server computer the same
+address (a "DHCP reservation" in the router's settings), so the server
+line never goes out of date.
+
+
+5. CHECKING IT WORKED
+---------------------
+
+The connect screen shows, at the bottom right, the PS2's address and
+how it got it:
+
+    PS2  192.168.0.34  (from router)
+    PS2  192.168.50.90  (static)
+    PS2  192.168.50.90  (static, no router)    <- auto fell back
+
+Just above the button hints, a red line appears if a line in
+settings.txt could not be used, with its line number, for example:
+
+    settings.txt: not an address (line 7)
+    settings.txt: video= must be 480i or 480p (line 9)
+    settings.txt: network=static needs a valid ip= line
+
+Only the first problem is shown. Fix it, restart, and check again.
+
+"No settings.txt beside the ELF: defaults" means the file was not found
+next to the ELF: check the folder and the file name.
+
+
+6. COMMON ERRORS WHEN CONNECTING
+--------------------------------
+
+No answer from the router
+    No router gave the PS2 an address. Check the cable and the router,
+    or on a direct cable use network=static with an ip line.
+
+No address set
+    network=static but no valid ip line. Add one.
+
+No network link
+    The Ethernet cable is not connected, or a fat PS2's network adapter
+    is not seated.
+
+HTTPS not supported
+    Use http:// with the server's local IP address.
+
+Could not write ...
+    The app could not save the server address (write-protected stick?).
+    Playback still works, but the address is not remembered.
+
+
+7. USERS AND SIGNING IN
+-----------------------
+
+After connecting, the app shows "Who is watching?": the users from your
+Jellyfin server's login page, plus "Other user" for accounts hidden from
+it. Nothing can be browsed or played until someone signs in.
+
+- A user with a password is asked for it once, on the on-screen keyboard.
+- A user without a password signs in directly.
+- Once signed in, the user shows "Signed in" and starts at once next time.
+- Triangle on a signed-in user signs them out, here and on the server.
+- After signing in, the app opens on HOME (Continue Watching and Next
+  Up). Circle on HOME, or at the top of the library, returns to "Who is
+  watching?".
+
+The app saves each sign-in in settings.txt, one line per user:
+
+    user=Name|user id|access token|device id
+
+You never need to write these lines; the app adds and removes them.
+
+Each time the app saves settings.txt, it first keeps the previous version
+as settings.bak in the same folder. If settings.txt is ever found empty
+(the console switched off in the middle of a save), the app restores it
+from settings.bak at the next start and says so on the connect screen.
+Avoid switching off right after signing in: give it a couple of seconds. The
+password itself is never saved, only the access token Jellyfin gives back.
+
+About the token: it lets anyone with the USB stick use that account, the
+same as a signed-in phone would. If the stick is lost, end the sign-in in
+Jellyfin's dashboard (Devices), or remove the line from settings.txt.
+
+Each user signed in on this PS2 appears as its own device in Jellyfin's
+dashboard, so signing one user in never signs another out.

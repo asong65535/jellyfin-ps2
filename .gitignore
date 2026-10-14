@@ -1,0 +1,27 @@
+# Build output
+*.elf
+*.o
+*_irx.c
+build/
+
+# Generated at build time
+src/font_data.c
+src/logo_data.c
+tools/*.png
+
+# Personal files: settings.txt holds sign-in tokens - never commit it
+settings.txt
+settings.bak
+jellyfin.txt
+jfurl.txt
+jfdebug.txt
+jfstuck.txt
+
+# Docker image exports
+*.tar
+*.tar.gz
+
+# System and tool leftovers
+.DS_Store
+__pycache__/
+*.pyc

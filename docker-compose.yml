@@ -1,0 +1,28 @@
+# Builds jellyfin-ps2.elf with the project's published build image:
+#
+#     docker compose run --rm build
+#
+# The image is ps2dev's toolchain with two fixes baked in (see README.md,
+# "Building from source"): ps2sdk rebuilt with TCP_MSS 1260 and
+# PBUF_POOL_BUFSIZE 1536, and libmpeg with the _mpeg_dmac_handler fix.
+# It is pinned by digest, so every build uses exactly the same toolchain.
+
+x-image: &image ghcr.io/jimmybizmobile/jfps2-sdk:1.0@sha256:f471d1a380e9f89921585aa4a6adc885449e48e95ddd81251d1e8198648eaa67
+
+services:
+  build:
+    image: *image
+    working_dir: /src
+    volumes:
+      - .:/src
+    entrypoint: /bin/sh
+    command: -c "make"
+
+  shell:
+    image: *image
+    working_dir: /src
+    volumes:
+      - .:/src
+    entrypoint: /bin/sh
+    stdin_open: true
+    tty: true

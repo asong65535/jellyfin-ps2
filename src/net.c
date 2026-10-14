@@ -1,0 +1,1068 @@
+#include "net.h"
+#include "config.h"
+#include "settings.h"
+
+#include <netman.h>
+#include <ps2ip.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <kernel.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* 64-byte aligned: the network path DMAs into this, and an unaligned
+ * destination is a classic source of dropped bytes on the EE. */
+static char g_raw[HTTP_RAW_MAX] __attribute__((aligned(64)));
+
+/*
+ * Who this PS2 says it is, in every request's Authorization header. Each
+ * signed-in user has a device id of their own (saved in settings.txt), so
+ * that signing one in never signs another out; before anyone signs in it is
+ * a neutral placeholder.
+ */
+static char g_device[48] = "ps2-unsigned";
+
+void net_set_device_id(const char *id)
+{
+	snprintf(g_device, sizeof(g_device), "%s", (id && id[0]) ? id : "ps2-unsigned");
+}
+
+/*
+ * The MediaBrowser Authorization header. Jellyfin wants it even with no
+ * token - signing in sends it bare - so it goes on every request.
+ */
+static int auth_header(char *out, int max, const char *token)
+{
+	if (token && token[0])
+		return snprintf(out, max,
+		    "Authorization: MediaBrowser Client=\"JellyfinPS2\", "
+		    "Device=\"PlayStation 2\", DeviceId=\"%s\", "
+		    "Version=\"0.1\", Token=\"%s\"\r\n", g_device, token);
+
+	return snprintf(out, max,
+	    "Authorization: MediaBrowser Client=\"JellyfinPS2\", "
+	    "Device=\"PlayStation 2\", DeviceId=\"%s\", "
+	    "Version=\"0.1\"\r\n", g_device);
+}
+static char g_local_ip[20] = "0.0.0.0";
+static unsigned g_last_port_net;      /* htons result, to prove it swapped */
+
+static long g_last_status;
+static int  g_last_len;               /* body bytes actually read */
+static int  g_last_expect;            /* Content-Length, -1 if absent */
+static char g_head[52], g_tail[52];
+
+/* Body bytes that arrived in the same read as the headers, for streaming. */
+/*
+ * Whatever arrived alongside the HTTP headers, waiting to be handed back.
+ *
+ * Tagged with the socket it belongs to. It used to be untagged, and
+ * net_stream_read returned it whoever asked - so a stream opening while
+ * another had bytes outstanding would be served the other one's opening
+ * data. Several kilobytes of the wrong film, at the exact moment a decoder
+ * is reading its sequence header, which is why one film played under
+ * another's title.
+ */
+static char g_leftover[2048];
+static int  g_pending, g_pending_len;
+static int  g_leftover_sock = -1;
+static int  g_raw_used;               /* whole response including headers */
+
+/* Every recv return value, so the dump can show where a hole appeared. */
+#define RECV_LOG_MAX 64
+static int g_recv_log[RECV_LOG_MAX];
+static int g_recv_count;
+
+static NetProgress g_progress;
+
+void net_set_progress(NetProgress fn) { g_progress = fn; }
+
+const char *net_local_ip(void) { return g_local_ip; }
+
+/*
+ * A one-line summary of the stack, appended to connect failures. Knowing
+ * the console's own address is what tells you whether a failed connect is
+ * "wrong server" or "wrong subnet".
+ */
+const char *net_last_info(void)
+{
+	static char buf[80];
+
+	if (g_last_expect >= 0)
+		snprintf(buf, sizeof(buf), "HTTP %ld, %d of %d bytes",
+		         g_last_status, g_last_len, g_last_expect);
+	else
+		snprintf(buf, sizeof(buf), "HTTP %ld, %d bytes, no length given",
+		         g_last_status, g_last_len);
+
+	return buf;
+}
+
+const char *net_last_raw(void)     { return g_raw; }
+
+int net_recv_count(void)     { return g_recv_count; }
+int net_recv_at(int i)
+{
+	return (i >= 0 && i < g_recv_count && i < RECV_LOG_MAX)
+	       ? g_recv_log[i] : 0;
+}
+
+int         net_last_raw_len(void) { return g_raw_used; }
+
+int net_last_body_len(void) { return g_last_len; }
+
+const char *net_last_head(void) { return g_head; }
+const char *net_last_tail(void) { return g_tail; }
+
+const char *net_status(void)
+{
+	static char buf[64];
+
+	if (g_last_port_net)
+		snprintf(buf, sizeof(buf), "PS2 is %s, port sent 0x%04x",
+		         g_local_ip, g_last_port_net);
+	else
+		snprintf(buf, sizeof(buf), "PS2 is %s", g_local_ip);
+
+	return buf;
+}
+
+static void say(const char *msg)
+{
+	if (g_progress)
+		g_progress(msg);
+}
+
+void net_say(const char *msg) { say(msg); }
+
+/* inet_aton is not exposed by this SDK, so parse dotted quads ourselves. */
+static void str_to_ip(const char *s, struct ip4_addr *out)
+{
+	unsigned int a = 0, b = 0, c = 0, d = 0;
+
+	if (sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d) != 4)
+		a = b = c = d = 0;
+
+	IP4_ADDR(out, a, b, c, d);
+}
+
+#if SKIP_NETWORK
+
+int net_start(void) { return -100; }
+void net_stop(void) { }
+
+int http_get(const char *host, int port, const char *path,
+             const char *token, int *status, char **body)
+{
+	(void)host; (void)port; (void)path; (void)token;
+	*status = 0; *body = g_raw; g_raw[0] = '\0';
+	return -99;
+}
+
+int net_http_send(const char *host, int port, const char *method,
+                  const char *path, const char *body)
+{
+	(void)host; (void)port; (void)method; (void)path; (void)body;
+	return -99;
+}
+
+int http_post(const char *host, int port, const char *path,
+              const char *token, const char *json, int *status, char **body)
+{
+	(void)host; (void)port; (void)path; (void)token; (void)json;
+	*status = 0; *body = g_raw; g_raw[0] = '\0';
+	return -99;
+}
+
+#else
+
+/* ------------------------------------------------------------------ */
+/* Waiting, the way the SDK sample does it                            */
+/*                                                                    */
+/* Sleeping the thread on an alarm rather than spinning. A busy loop   */
+/* starves the RPC to the IOP and NetManIoctl deadlocks on the second  */
+/* call.                                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Every timed wake-up delivered, from any thread. Shown on screen while
+ * testing: if it stops moving, nothing that sleeps will ever wake.
+ */
+static volatile int g_alarms;
+
+int net_alarms(void) { return g_alarms; }
+
+static void wake_cb(s32 alarm_id, u16 time, void *common)
+{
+	(void)alarm_id; (void)time;
+	g_alarms++;
+	iWakeupThread(*(int *)common);
+}
+
+static int wait_for(int (*ready)(void), int seconds, const char *label)
+{
+	char msg[64];
+
+	for (int i = 0; i < seconds; i++) {
+		if (ready())
+			return 0;
+
+		snprintf(msg, sizeof(msg), "net: %s %d/%d", label, i + 1, seconds);
+		say(msg);
+
+		net_snooze(1000);
+	}
+
+	return ready() ? 0 : -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sleeping on the vertical blank                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Timed sleeps are counted in vertical blanks, not kernel alarms.
+ *
+ * On hardware, threads sleeping on a kernel alarm were found asleep for
+ * good: the music worker after a video (step 0, loop count frozen), and the
+ * artwork loader on its pause after the last poster (W9, DMA fine, alarms
+ * still firing for other threads). The alarm's wake-up simply never came
+ * for that one sleep.
+ *
+ * The vertical blank interrupt is the most dependable clock on the console:
+ * it is what the picture is drawn on, and it cannot stop without the screen
+ * stopping too. Each sleeper takes a slot with its own semaphore; the blank
+ * handler counts the slot down and signals it at zero. A semaphore keeps
+ * its count, so a signal that lands before the wait is not lost, and only
+ * the slot's own handler ever signals it, so nothing else can wake the
+ * sleeper early either.
+ */
+#define SNOOZE_SLOTS 16
+
+static volatile int s_left[SNOOZE_SLOTS];   /* blanks still to wait, 0 idle */
+static volatile int s_used[SNOOZE_SLOTS];
+static int          s_sema[SNOOZE_SLOTS];
+static int          s_ready;
+
+/* Run on every vertical blank, in the interrupt: see net_set_vblank_hook. */
+static void (*volatile g_vblank_hook)(void);
+static void (*volatile g_vblank_hook2)(void);
+
+void net_set_vblank_hook(void (*fn)(void)) { g_vblank_hook = fn; }
+void net_add_vblank_hook(void (*fn)(void)) { g_vblank_hook2 = fn; }
+
+static s32 vblank_cb(s32 cause)
+{
+	(void)cause;
+
+	if (g_vblank_hook)
+		g_vblank_hook();
+	if (g_vblank_hook2)
+		g_vblank_hook2();
+
+	for (int i = 0; i < SNOOZE_SLOTS; i++) {
+		if (s_left[i] > 0 && --s_left[i] == 0) {
+			g_alarms++;
+			iSignalSema(s_sema[i]);
+		}
+	}
+
+	ExitHandler();
+	return 0;
+}
+
+void net_snooze_init(void)
+{
+	if (s_ready)
+		return;
+
+	for (int i = 0; i < SNOOZE_SLOTS; i++) {
+		ee_sema_t sem;
+
+		memset(&sem, 0, sizeof(sem));
+		sem.init_count = 0;
+		sem.max_count  = 1;
+		s_sema[i] = CreateSema(&sem);
+
+		if (s_sema[i] < 0)
+			return;                    /* keep using alarms */
+	}
+
+	if (AddIntcHandler(INTC_VBLANK_S, vblank_cb, 0) < 0)
+		return;
+
+	EnableIntc(INTC_VBLANK_S);
+	s_ready = 1;
+}
+
+/* The old way, kept for before net_snooze_init and if no slot is free. */
+static void snooze_alarm(int ms)
+{
+	int tid = GetThreadId();
+
+	if (ms > 4000) ms = 4000;      /* the tick count is a u16 */
+
+	/* Never sleep on an alarm that was not registered: SleepThread only
+	 * returns when something wakes it. */
+	if (SetAlarm((u16)(ms * 16), &wake_cb, &tid) < 0)
+		return;
+
+	SleepThread();
+}
+
+/*
+ * Sleep without spinning. A nopdelay loop keeps the EE busy, and anything
+ * the stack needs to process, ARP replies included, never gets a chance to
+ * run. That was why a connect retry blocked: the delay between attempts
+ * prevented the resolution it was waiting for.
+ */
+void net_snooze(int ms)
+{
+	if (ms < 16)
+		ms = 16;
+
+	if (!s_ready) {
+		snooze_alarm(ms);
+		return;
+	}
+
+	int slot = -1;
+	int oi   = DIntr();
+
+	for (int i = 0; i < SNOOZE_SLOTS; i++) {
+		if (!s_used[i]) {
+			s_used[i] = 1;
+			slot = i;
+			break;
+		}
+	}
+
+	if (oi)
+		EIntr();
+
+	if (slot < 0) {
+		snooze_alarm(ms);
+		return;
+	}
+
+	/* Whole blanks, rounded up: 60 a second. */
+	int blanks = (ms * 60 + 999) / 1000;
+
+	if (blanks < 1)
+		blanks = 1;
+
+	PollSema(s_sema[slot]);            /* nothing left over from before */
+	s_left[slot] = blanks;
+
+	WaitSema(s_sema[slot]);
+
+	s_used[slot] = 0;
+}
+
+static int link_is_up(void)
+{
+	return NetManIoctl(NETMAN_NETIF_IOCTL_GET_LINK_STATUS, NULL, 0, NULL, 0)
+	       == NETMAN_NETIF_ETH_LINK_STATE_UP;
+}
+
+static int dhcp_is_bound(void)
+{
+	t_ip_info info;
+
+	if (ps2ip_getconfig("sm0", &info) < 0)
+		return 0;
+
+	return info.dhcp_status == DHCP_STATE_BOUND ||
+	       info.dhcp_status == DHCP_STATE_OFF;
+}
+
+/* How the address was had, for the connect screen. */
+static const char *g_net_how = "";
+
+const char *net_how(void) { return g_net_how; }
+
+/* settings.txt's static address, onto an interface already running. */
+static int set_static(void)
+{
+	struct ip4_addr ip, nm, gw;
+	t_ip_info info;
+
+	if (ps2ip_getconfig("sm0", &info) < 0)
+		return -4;
+
+	str_to_ip(settings.ip,   &ip);
+	str_to_ip(settings.mask[0] ? settings.mask : "255.255.255.0", &nm);
+	str_to_ip(settings.gateway[0] ? settings.gateway : settings.ip, &gw);
+
+	info.dhcp_enabled = 0;
+	memcpy(&info.ipaddr,  &ip, sizeof(ip));
+	memcpy(&info.netmask, &nm, sizeof(nm));
+	memcpy(&info.gw,      &gw, sizeof(gw));
+	ps2ip_setconfig(&info);
+
+	dns_setserver(0, &gw);
+	return 0;
+}
+
+static void record_local_ip(void)
+{
+	t_ip_info info;
+
+	if (ps2ip_getconfig("sm0", &info) < 0)
+		return;
+
+	/*
+	 * Copy the address out as bytes rather than casting the struct, which
+	 * is what the ip4_addr1..4 macros do and what gcc warns about. The
+	 * value is in network byte order, so byte 0 is the first octet.
+	 */
+	unsigned char o[4];
+	memcpy(o, &info.ipaddr, 4);
+
+	snprintf(g_local_ip, sizeof(g_local_ip), "%d.%d.%d.%d",
+	         o[0], o[1], o[2], o[3]);
+}
+
+/*
+ * Order follows $PS2SDK/samples/network/tcpip-dhcp:
+ *   NetManInit -> link mode -> wait for link -> ps2ipInit -> lease.
+ *
+ * Returns 0 on success. -1 init failed, -2 no link, -4 no address.
+ */
+int net_start(void)
+{
+	struct ip4_addr ip, nm, gw;
+	char msg[64];
+	int rc;
+
+	say("net: NetManInit");
+	rc = NetManInit();
+	if (rc != 0) {
+		snprintf(msg, sizeof(msg), "net: NetManInit failed (%d)", rc);
+		say(msg);
+		return -1;
+	}
+
+	say("net: link mode auto");
+	rc = NetManSetLinkMode(NETMAN_NETIF_ETH_LINK_MODE_AUTO);
+	if (rc != 0) {
+		/* Not fatal. Some PHYs reject the change and work anyway. */
+		snprintf(msg, sizeof(msg), "net: link mode rejected (%d)", rc);
+		say(msg);
+	}
+
+#if REQUIRE_LINK
+	/* Catch an unplugged cable here, where the message can say so. */
+	if (wait_for(link_is_up, LINK_TIMEOUT, "link") != 0) {
+		say("net: no link");
+		return -2;
+	}
+	say("net: link up");
+#endif
+
+	/*
+	 * settings.txt decides: static is set at once; dhcp asks the router;
+	 * auto asks too, but only briefly, then falls back to the static
+	 * lines - so one stick works on a router and on a direct cable.
+	 */
+	if (settings.network == NET_STATIC) {
+		if (!settings.ip[0])
+			return -5;
+
+		str_to_ip(settings.ip, &ip);
+		str_to_ip(settings.mask[0] ? settings.mask : "255.255.255.0", &nm);
+		str_to_ip(settings.gateway[0] ? settings.gateway : settings.ip, &gw);
+
+		say("net: ps2ipInit (static)");
+		ps2ipInit(&ip, &nm, &gw);
+		dns_setserver(0, &gw);
+		g_net_how = "static";
+	} else {
+		IP4_ADDR(&ip, 0, 0, 0, 0);
+		IP4_ADDR(&nm, 0, 0, 0, 0);
+		IP4_ADDR(&gw, 0, 0, 0, 0);
+
+		say("net: ps2ipInit");
+		ps2ipInit(&ip, &nm, &gw);
+
+		t_ip_info info;
+
+		if (ps2ip_getconfig("sm0", &info) < 0) {
+			say("net: sm0 not registered");
+			return -4;
+		}
+
+		info.dhcp_enabled = 1;
+		ps2ip_setconfig(&info);
+
+		/*
+		 * auto waits briefly only when it has a static address to fall
+		 * back to. Without one it is plain dhcp, with dhcp's patience.
+		 */
+		int fallback = settings.network == NET_AUTO && settings.ip[0];
+		int wait     = fallback ? AUTO_DHCP_TIMEOUT : DHCP_TIMEOUT;
+
+		say("net: asking router for an address");
+
+		if (wait_for(dhcp_is_bound, wait, "dhcp") == 0) {
+			g_net_how = "from router";
+		} else if (fallback) {
+			say("net: no router, using static address");
+
+			if (set_static() < 0)
+				return -4;
+
+			g_net_how = "static, no router";
+		} else {
+			say("net: no address");
+			return -4;
+		}
+	}
+
+#if FORCE_NETIF_UP
+	say("net: forcing netif up");
+	{
+		struct netif *nif = netif_list;
+		while (nif) { netif_set_link_up(nif); netif_set_up(nif); nif = nif->next; }
+	}
+#endif
+
+	record_local_ip();
+
+	snprintf(msg, sizeof(msg), "net: ready at %s", g_local_ip);
+	say(msg);
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+/* Shared by http_get and http_get_range. extra may be NULL. */
+static int request(const char *host, int port, const char *path,
+                   const char *token, const char *extra, const char *json,
+                   int *status, char **body);
+
+void net_stop(void)
+{
+	/* Mirrors the teardown in $PS2SDK/samples/network/tcpip-basic, so the
+	 * stack is not left running when we hand control back. */
+	ps2ipDeinit();
+	NetManDeinit();
+}
+
+int http_get(const char *host, int port, const char *path,
+             const char *token, int *status, char **body)
+{
+	return request(host, port, path, token, NULL, NULL, status, body);
+}
+
+int http_post(const char *host, int port, const char *path,
+              const char *token, const char *json, int *status, char **body)
+{
+	return request(host, port, path, token, NULL, json ? json : "{}",
+	               status, body);
+}
+
+/* ------------------------------------------------------------------ */
+/* Streaming                                                          */
+/* ------------------------------------------------------------------ */
+
+static int connect_to(const char *host, int port)
+{
+	struct ip4_addr hip;
+	str_to_ip(host, &hip);
+	if (hip.addr == 0)
+		return -2;
+
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family      = AF_INET;
+	sa.sin_port        = htons(port);
+	sa.sin_addr.s_addr = hip.addr;
+
+	for (int attempt = 0; attempt < 3; attempt++) {
+		int s = socket(AF_INET, SOCK_STREAM, 0);
+		if (s < 0)
+			return -1;
+
+		if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0)
+			return s;
+
+		close(s);
+		net_snooze(250);
+	}
+
+	return -3;
+}
+
+int net_stream_open(const char *host, int port, const char *path,
+                    const char *token)
+{
+	return net_stream_open_wait(host, port, path, token, 1000);
+}
+
+int net_stream_open_wait(const char *host, int port, const char *path,
+                         const char *token, int wait_ms)
+{
+	int s = connect_to(host, port);
+	if (s < 0)
+		return s;
+
+	static char req[2048];
+	int n;
+
+	{
+		char auth[320];
+
+		auth_header(auth, sizeof(auth), token);
+		n = snprintf(req, sizeof(req),
+		    "GET %s HTTP/1.0\r\nHost: %s:%d\r\n%sAccept: */*\r\n\r\n",
+		    path, host, port, auth);
+	}
+
+	if (send(s, req, n, 0) < 0) {
+		close(s);
+		return -4;
+	}
+
+	/*
+	 * A receive timeout, so a read cannot block forever.
+	 *
+	 * Closing a socket does not wake a thread already blocked in recv on
+	 * this stack, so a decoder thread waiting for video could not be got
+	 * out of it at all - it stayed inside MPEG_Picture, and nothing could
+	 * then reset the IPU or destroy the session safely.
+	 *
+	 * A second is long enough that it never fires during playback and
+	 * short enough that stopping is prompt. SO_RCVBUF is rejected by this
+	 * stack; SO_RCVTIMEO is not.
+	 */
+	{
+		struct timeval tv;
+
+		tv.tv_sec  = wait_ms / 1000;
+		tv.tv_usec = (wait_ms % 1000) * 1000;
+
+		setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	}
+
+	/*
+	 * Read just far enough to find the end of the headers, then leave the
+	 * rest in the socket. Anything already read past the blank line is
+	 * body, so it is stashed and returned by the first net_stream_read.
+	 */
+	static char hdr[2048];
+	int used = 0;
+	char *end = NULL;
+
+	while (used < (int)sizeof(hdr) - 1) {
+		int r = recv(s, hdr + used, sizeof(hdr) - 1 - used, 0);
+		if (r <= 0)
+			break;
+
+		used += r;
+		hdr[used] = '\0';
+
+		end = strstr(hdr, "\r\n\r\n");
+		if (end)
+			break;
+	}
+
+	if (!end) {
+		close(s);
+		return -5;
+	}
+
+	if (strncmp(hdr, "HTTP/", 5) == 0 && atoi(hdr + 9) != 200) {
+		close(s);
+		return -6;
+	}
+
+	g_pending     = (end + 4) - hdr;
+	g_pending_len = used - g_pending;
+
+	if (g_pending_len > 0)
+		memcpy(g_leftover, hdr + g_pending, g_pending_len);
+	else
+		g_pending_len = 0;
+
+	g_pending       = 0;
+	g_leftover_sock = s;
+
+	return s;
+}
+
+int net_stream_read(int sock, void *buf, int len)
+{
+	/* Hand back whatever came in alongside the headers first - but only
+	 * to the stream it actually belongs to. */
+	if (g_pending_len > 0 && sock == g_leftover_sock) {
+		int n = (g_pending_len < len) ? g_pending_len : len;
+
+		memcpy(buf, g_leftover + g_pending, n);
+		g_pending     += n;
+		g_pending_len -= n;
+
+		if (g_pending_len == 0)
+			g_pending = 0;
+
+		return n;
+	}
+
+	return recv(sock, buf, len, 0);
+}
+
+/*
+ * Shorten a stream's receive timeout once it is open.
+ *
+ * The open keeps the long one, since Jellyfin can take a moment to send the
+ * headers of a fresh transcode. Afterwards a short one means a thread
+ * blocked in recv sees a stop request within that time rather than after a
+ * full second: closing the socket does not wake it on this stack.
+ */
+void net_stream_set_timeout(int sock, int ms)
+{
+	struct timeval tv;
+
+	if (sock < 0)
+		return;
+
+	tv.tv_sec  = ms / 1000;
+	tv.tv_usec = (ms % 1000) * 1000;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+void net_stream_close(int sock)
+{
+	/* Do not leave this stream's opening bytes for the next one. */
+	if (sock == g_leftover_sock) {
+		g_pending       = 0;
+		g_pending_len   = 0;
+		g_leftover_sock = -1;
+	}
+
+	if (sock >= 0)
+		close(sock);
+}
+
+int net_http_send(const char *host, int port, const char *method,
+                  const char *path, const char *body)
+{
+	int s = connect_to(host, port);
+
+	if (s < 0)
+		return s;
+
+	static char req[1024];
+	int blen = body ? (int)strlen(body) : 0;
+
+	int n = snprintf(req, sizeof(req),
+	    "%s %s HTTP/1.0\r\n"
+	    "Host: %s:%d\r\n"
+	    "Content-Type: application/json\r\n"
+	    "Content-Length: %d\r\n"
+	    "Accept: */*\r\n\r\n%s",
+	    method, path, host, port, blen, body ? body : "");
+
+	if (n <= 0 || n >= (int)sizeof(req) || send(s, req, n, 0) < 0) {
+		close(s);
+		return -4;
+	}
+
+	/* Two seconds for the status line; nothing else is needed. */
+	{
+		struct timeval tv;
+
+		tv.tv_sec  = 2;
+		tv.tv_usec = 0;
+		setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	}
+
+	char line[64];
+	int  got = recv(s, line, sizeof(line) - 1, 0);
+
+	close(s);
+
+	if (got < 12 || strncmp(line, "HTTP/", 5) != 0)
+		return -5;
+
+	line[got] = '\0';
+	return atoi(line + 9);
+}
+
+int http_get_range(const char *host, int port, const char *path,
+                   const char *token, long start, int len,
+                   char *out, int *status, long *total)
+{
+	char extra[64];
+	char *body;
+
+	snprintf(extra, sizeof(extra), "Range: bytes=%ld-%ld\r\n",
+	         start, start + len - 1);
+
+	int rc = request(host, port, path, token, extra, NULL, status, &body);
+	if (rc < 0)
+		return rc;
+
+	/* 206 with a range, or 200 if the server ignored the header. */
+	if (*status != 206 && *status != 200)
+		return -7;
+
+	*total = -1;
+	{
+		const char *cr = strstr(g_raw, "Content-Range:");
+		if (!cr) cr = strstr(g_raw, "content-range:");
+
+		if (cr) {
+			const char *slash = strchr(cr, '/');
+			if (slash) *total = atol(slash + 1);
+		}
+	}
+
+	int n = g_last_len;
+	if (n > len) n = len;
+	if (n > 0) memcpy(out, body, n);
+
+	return n;
+}
+
+static int request(const char *host, int port, const char *path,
+                   const char *token, const char *extra, const char *json,
+                   int *status, char **body)
+{
+	*status  = 0;
+	*body    = g_raw;
+	g_raw[0] = '\0';
+
+	struct ip4_addr hip;
+	str_to_ip(host, &hip);          /* no DNS, so this must be a dotted quad */
+	if (hip.addr == 0)
+		return -2;
+
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family      = AF_INET;
+	sa.sin_port        = htons(port);
+	sa.sin_addr.s_addr = hip.addr;
+
+	/* 8096 is 0x1fa0, so a working htons gives 0xa01f. Confirmed correct on
+	 * hardware; kept because a byte-order bug here looks like nothing else. */
+	g_last_port_net = (unsigned)sa.sin_port & 0xFFFF;
+
+	/*
+	 * Connect, with retries.
+	 *
+	 * The first attempt after the stack comes up reliably fails: lwIP has
+	 * no ARP entry for the peer, so the SYN is dropped while the address
+	 * resolves and a blocking connect gives up rather than waiting. The
+	 * next attempt finds the entry cached.
+	 *
+	 * Each attempt gets a fresh socket. A failed connect leaves the old one
+	 * in SYN_SENT, and those accumulate until lwIP runs out of PCBs, which
+	 * is what made the third browse session hang.
+	 */
+	/*
+	 * Nudge ARP, once per host.
+	 *
+	 * A UDP send queues a packet and returns immediately, which starts
+	 * resolution without blocking, so the TCP connect that follows finds the
+	 * entry cached instead of losing its first SYN to it.
+	 *
+	 * Only the first time, though. A capture showed this firing before every
+	 * request and drawing an ICMP port unreachable each time, which is a
+	 * pointless round trip once the entry exists.
+	 */
+	{
+		static u32 nudged_addr;
+
+		if (nudged_addr != hip.addr) {
+			int u = socket(AF_INET, SOCK_DGRAM, 0);
+
+			if (u >= 0) {
+				sendto(u, "", 1, 0, (struct sockaddr *)&sa, sizeof(sa));
+				close(u);
+				net_snooze(250);   /* yields, so the reply can arrive */
+			}
+			nudged_addr = hip.addr;
+		}
+	}
+
+	int s = -1;
+	char dbg[64];
+
+	for (int attempt = 0; attempt < 4; attempt++) {
+		s = socket(AF_INET, SOCK_STREAM, 0);
+		if (s < 0)
+			return -1;
+
+		/* Bound the blocking calls. Not every lwIP build honours these. */
+		{
+			struct timeval tv;
+			tv.tv_sec  = 5;
+			tv.tv_usec = 0;
+			setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+			setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+			/* A larger receive buffer, if this build supports it.
+			 * Probably a no-op: the 2047-byte cap this was meant to
+			 * lift turned out not to exist. Harmless to ask. */
+			int rb = HTTP_RCVBUF;
+			setsockopt(s, SOL_SOCKET, SO_RCVBUF, &rb, sizeof(rb));
+		}
+
+		if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0)
+			break;
+
+		close(s);
+		s = -1;
+
+		snprintf(dbg, sizeof(dbg), "net: connect retry %d/4", attempt + 2);
+		say(dbg);
+
+		/* Yielding, so ARP can actually complete while we wait. */
+		net_snooze(500);
+	}
+
+	if (s < 0)
+		return -3;
+
+	static char req[2048];
+	int n;
+
+	/*
+	 * HTTP/1.0 on purpose: no chunked transfer encoding, so the body is
+	 * always plain and close-delimited. Verified against Kestrel.
+	 */
+	const char *ex = extra ? extra : "";
+
+	char auth[320];
+
+	auth_header(auth, sizeof(auth), token);
+
+	if (json) {
+		/* A POST with a JSON body: signing in, signing out. */
+		n = snprintf(req, sizeof(req),
+		    "POST %s HTTP/1.0\r\n"
+		    "Host: %s:%d\r\n"
+		    "%s%s"
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n"
+		    "Accept: */*\r\n\r\n%s",
+		    path, host, port, auth, ex, (int)strlen(json), json);
+	} else {
+		n = snprintf(req, sizeof(req),
+		    "GET %s HTTP/1.0\r\n"
+		    "Host: %s:%d\r\n"
+		    "%s%s"
+		    "Accept: */*\r\n\r\n",
+		    path, host, port, auth, ex);
+	}
+
+	if (n >= (int)sizeof(req)) { close(s); return -4; }
+
+	if (send(s, req, n, 0) < 0) { close(s); return -4; }
+
+	int used = 0;
+	g_recv_count = 0;
+
+	for (;;) {
+		/*
+		 * Take as much as possible per call. The receive mailbox is the
+		 * bottleneck: when it fills, lwIP drops already-acknowledged
+		 * data. Draining in large gulps keeps it emptier.
+		 */
+		int want = HTTP_RAW_MAX - 1 - used;
+		if (want > HTTP_CHUNK) want = HTTP_CHUNK;
+		if (want <= 0) break;
+
+		int r = recv(s, g_raw + used, want, 0);
+
+		if (g_recv_count < RECV_LOG_MAX)
+			g_recv_log[g_recv_count++] = r;
+
+		if (r <= 0) break;
+		used += r;
+	}
+	g_raw[used] = '\0';
+	g_raw_used  = used;
+	close(s);
+
+	if (used < 12 || strncmp(g_raw, "HTTP/", 5) != 0) {
+		g_last_status = 0;
+		g_last_len    = used;
+		g_last_expect = -1;
+		return -5;
+	}
+
+	*status       = atoi(g_raw + 9);      /* "HTTP/1.0 200 OK" */
+	g_last_status = *status;
+
+	/*
+	 * Compare what arrived against what was promised. Without this a
+	 * truncated body looks like a valid 200 with unparseable JSON, which
+	 * is a much more confusing thing to debug.
+	 */
+	g_last_expect = -1;
+	{
+		const char *cl = strstr(g_raw, "Content-Length:");
+		if (!cl) cl = strstr(g_raw, "content-length:");
+		if (cl)  g_last_expect = atoi(cl + 15);
+	}
+
+	char *end = strstr(g_raw, "\r\n\r\n");
+	*body = end ? end + 4 : g_raw + used;
+
+	g_last_len = end ? (int)(used - (end + 4 - g_raw)) : 0;
+
+	/* Keep both ends of the body for the error screen. */
+	{
+		const char *b = *body;
+		int n = g_last_len;
+
+		snprintf(g_head, sizeof(g_head), "%.*s",
+		         n < 48 ? n : 48, b);
+
+		int t = n < 48 ? n : 48;
+		snprintf(g_tail, sizeof(g_tail), "%.*s", t, b + n - t);
+	}
+
+	/* Promised more than it delivered. */
+	if (g_last_expect > 0 && g_last_len < g_last_expect)
+		return -6;
+
+	/*
+	 * Kestrel sends no Content-Length for HTTP/1.0, so length cannot prove
+	 * completeness. For JSON it can be proven directly: a complete document
+	 * ends with a closing brace or bracket.
+	 *
+	 * Only for JSON, though. A JPEG ends with 0xD9, and applying this to
+	 * binary rejected every image ever fetched. So look at the first byte
+	 * and only judge documents that claim to be JSON.
+	 */
+	if (g_last_len > 0 && !extra) {      /* a range reply is partial by design */
+		const char *b = *body;
+
+		int f = 0;
+		while (f < g_last_len && (b[f] == '\n' || b[f] == '\r' ||
+		                          b[f] == ' '  || b[f] == '\t'))
+			f++;
+
+		int looks_like_json = (f < g_last_len &&
+		                       (b[f] == '{' || b[f] == '['));
+
+		if (looks_like_json) {
+			int i = g_last_len - 1;
+
+			while (i > 0 && (b[i] == '\n' || b[i] == '\r' ||
+			                 b[i] == ' '  || b[i] == '\t'))
+				i--;
+
+			if (b[i] != '}' && b[i] != ']')
+				return -6;              /* truncated mid-document */
+		}
+	}
+
+	return 0;
+}
+
+#endif /* SKIP_NETWORK */

@@ -1,0 +1,20 @@
+# Jellyfin PS2 settings - copy to settings.txt beside the ELF and edit.
+# Lines starting with # are comments. Missing lines use their defaults.
+# See tuto.txt for every setting.
+
+# Jellyfin server: address and port (http:// is optional)
+server=192.168.0.20:8096
+
+# PS2 network: auto, dhcp or static
+network=dhcp
+
+# For a direct cable (no router) use instead:
+#   network=static
+#   ip=192.168.50.90
+#   mask=255.255.255.0
+#   gateway=192.168.50.1
+
+# Video output: 480i or 480p (480p is not used yet)
+video=480i
+
+# Signed-in users are added below by the app (user=...).

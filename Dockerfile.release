@@ -1,0 +1,17 @@
+# The published build image: ghcr.io/jimmybizmobile/jfps2-sdk
+#
+# jfps2-mss (Dockerfile.mss: ps2sdk rebuilt with TCP_MSS 1260 and
+# PBUF_POOL_BUFSIZE 1536, gsKit rebuilt against it) plus libmpeg with the
+# _mpeg_dmac_handler fix, from third_party/libmpeg-fixed.a.
+#
+# Rebuild and publish (maintainers):
+#     docker build -f Dockerfile.mss -t jfps2-mss .
+#     docker build -f Dockerfile.release -t ghcr.io/jimmybizmobile/jfps2-sdk:1.0 .
+#     docker push ghcr.io/jimmybizmobile/jfps2-sdk:1.0
+
+FROM jfps2-mss
+
+COPY third_party/libmpeg-fixed.a /usr/local/ps2dev/ps2sdk/ee/lib/libmpeg.a
+
+LABEL org.opencontainers.image.source="https://github.com/jimmyBizMobile/jellyfin-ps2"
+LABEL org.opencontainers.image.description="Build environment for Jellyfin PS2"
