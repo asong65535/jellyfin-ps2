@@ -154,7 +154,7 @@ hang on the very last bytes of a stream, so playback stops just before them.
 - [jsmn](https://github.com/zserge/jsmn) for JSON parsing.
 - The [Jellyfin](https://jellyfin.org) project.
 - Other Jellyfin clients for limited hardware, whose code informed this one,
-  notably ORBIT (PS2), Pocketfin (PSP), and clients for PS3 and Wii U.
+  notably Pocketfin (PSP), and clients for PS3 and Wii U.
 
 ---
 
