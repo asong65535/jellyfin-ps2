@@ -1,3 +1,7 @@
+/*
+ * The generated font atlas and the text drawing functions; see font.c.
+ */
+
 #ifndef FONT_H
 #define FONT_H
 
@@ -21,15 +25,28 @@ typedef struct {
 	unsigned short adv;       /* pen advance in pixels    */
 } FontGlyph;
 
-extern const int font_atlas_w, font_atlas_h;
-extern const int font_cell_w,  font_cell_h;
-extern const int font_line_h;
-extern const int font_first,   font_count;
+/* One generated atlas: its size, cell, line height, glyph table, bits. */
+typedef struct {
+	int atlas_w, atlas_h;
+	int cell_w,  cell_h;
+	int line_h;
+	int first,   count;
+	const FontGlyph     *glyphs;
+	const unsigned char *bits;
+} FontAtlasData;
 
-extern const FontGlyph     font_glyphs[];
-extern const unsigned char font_bits[];
+/*
+ * The menus' font. Every mode draws this one atlas: in 240p it is simply
+ * drawn at half size (the layout's scale), as the Rokusho 240p test suite
+ * does with its own - so text looks the same in every mode, and only the
+ * interlace flicker differs.
+ */
+extern const FontAtlasData font_normal;
 
 void  font_init(GSGLOBAL *gs);
+
+/* After a display mode change: put the atlas back in VRAM (display.h). */
+void  font_reload(GSGLOBAL *gs);
 
 float font_width (float scale, const char *s);   /* exact */
 float font_height(float scale);

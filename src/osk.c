@@ -1,3 +1,8 @@
+/*
+ * The on-screen keyboard: letters, digits and symbols laid out in rows,
+ * driven by the d-pad, editing whichever text buffer a screen binds to it.
+ */
+
 #include "osk.h"
 #include "ui.h"
 
@@ -62,6 +67,10 @@ static void row_chars(const char *chars, float kw)
 	g_rows++;
 }
 
+/*
+ * Lay out a row of special keys (Caps, Space, Enter...) of given widths,
+ * centred.
+ */
 static void row_special(const SpecDef *d, int n)
 {
 	float total = -KEY_GAP;
@@ -84,6 +93,10 @@ static void row_special(const SpecDef *d, int n)
 	g_rows++;
 }
 
+/*
+ * Lay out the whole keyboard for the current mode (letters or symbols,
+ * lower or upper case).
+ */
 static void build(void)
 {
 	g_count = 0;
@@ -128,8 +141,13 @@ static void build(void)
 	if (g_sel_col >= g_row_len[g_sel_row]) g_sel_col = g_row_len[g_sel_row] - 1;
 }
 
+/* Reset the cursor and lay the keyboard out. Once, at start-up. */
 void osk_init(void) { g_sel_row = g_sel_col = 0; build(); }
 
+/*
+ * Make buf (size bytes) the text the keyboard edits. Each screen binds its
+ * own field.
+ */
 void osk_bind(char *buf, int size) { g_buf = buf; g_buf_size = size; }
 
 /* ------------------------------------------------------------------ */
@@ -141,6 +159,7 @@ void osk_append(char c)
 	if (n < g_buf_size - 1) { g_buf[n] = c; g_buf[n + 1] = '\0'; }
 }
 
+/* Delete the last character of the bound text. */
 void osk_backspace(void)
 {
 	if (!g_buf) return;
@@ -148,6 +167,10 @@ void osk_backspace(void)
 	if (n > 0) g_buf[n - 1] = '\0';
 }
 
+/*
+ * Move the cursor with the d-pad and act on X (type a key, Caps, Space,
+ * symbols, Backspace) or Square (delete). Returns 1 when Enter is pressed.
+ */
 int osk_input(u32 p)
 {
 	if (p & PAD_UP)    { if (g_sel_row > 0) g_sel_row--; }
@@ -177,6 +200,7 @@ int osk_input(u32 p)
 	return 0;
 }
 
+/* Draw every key, the selected one highlighted. */
 void osk_draw(void)
 {
 	for (int i = 0; i < g_count; i++) {

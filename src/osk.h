@@ -1,3 +1,7 @@
+/*
+ * The on-screen keyboard; see osk.c.
+ */
+
 #ifndef OSK_H
 #define OSK_H
 

@@ -1,6 +1,10 @@
+/*
+ * The music player: an album's track with cover, time bar and transport
+ * buttons, moving on to the next track by itself.
+ */
+
 #include "screens.h"
-#include "video.h"
-#include "vaudio.h"
+#include "config.h"
 #include "ui.h"
 #include "jf.h"
 #include "poster.h"
@@ -58,6 +62,10 @@ void scr_player_start(void)
 	           jf_track_stream_path(jf_tracks[g_track].id), jf_key());
 }
 
+/*
+ * Open the player on a track of the loaded album, stopping whatever played
+ * before.
+ */
 void scr_player_open(int track)
 {
 	g_track = track;
@@ -66,15 +74,20 @@ void scr_player_open(int track)
 	audio_stop();          /* whatever was playing before is not this */
 }
 
+/* Whether there is a track before this one. */
 static int has_prev(void) { return g_track > 0; }
+
+/* Whether there is a track after this one. */
 static int has_next(void) { return g_track + 1 < jf_track_count; }
 
+/* Keep the track index inside the album. */
 static void enter(void)
 {
 	if (g_track >= jf_track_count)
 		g_track = jf_track_count ? jf_track_count - 1 : 0;
 }
 
+/* Act on the focused transport button: previous, play/pause, stop, next. */
 static void activate(void)
 {
 	switch (g_btn) {
@@ -122,6 +135,10 @@ static void activate(void)
 	}
 }
 
+/*
+ * Moves to the next track when one ends, then Left/Right between buttons,
+ * X to act, Circle back to the track list.
+ */
 static void input(u32 p)
 {
 	/*
@@ -216,6 +233,10 @@ static void draw_button(float x, float y, Btn kind, int enabled, int focused)
 	}
 }
 
+/*
+ * The music player: cover, title, artist and album, the time bar, status,
+ * the transport buttons.
+ */
 static void draw(void)
 {
 	ui_waves();
@@ -297,6 +318,11 @@ static void draw(void)
 		ui_text_c(SCR_W / 2, 284, 1.0f, C_ERR, audio_error());
 	else if (audio_state() == AUDIO_BUFFERING) {
 		ui_text_c(SCR_W / 2, 284, 1.0f, C_DIM, "Buffering...");
+
+#if DEBUG_UI
+		/* Where the music worker is: see audio_debug. */
+		ui_text_c(SCR_W / 2, 372, 1.0f, C_DIM, audio_debug());
+#endif
 	}
 
 	/* Transport */

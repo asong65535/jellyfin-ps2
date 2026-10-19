@@ -1,3 +1,7 @@
+/*
+ * Music playback: play, pause, stop and state; see audio.c.
+ */
+
 #ifndef AUDIO_H_INCLUDED
 #define AUDIO_H_INCLUDED
 
@@ -58,14 +62,12 @@ int         audio_position(void);
  */
 /* PCM bytes delivered so far. The caller times it against vsync, which is a
  * known 60 Hz; cpu_ticks counts CPU cycles and is not a clock. */
-int  audio_bytes(void);
 
 /*
  * Frames decoded, and frames libmad refused. A refused frame is roughly 26 ms
  * of silence, which is audible. Errors climbing while the delivered rate
  * matches the required one means the data is damaged rather than late.
  */
-int  audio_frames(void);
 
 /*
  * Where the worker is, for the music screen while it says Buffering:
@@ -76,23 +78,17 @@ int  audio_frames(void);
  * which call is stuck.
  */
 const char *audio_debug(void);
-int  audio_errors(void);
 
 /* MP3 bytes discarded by the carry-forward. Should always be 0. */
-int  audio_dropped(void);
 
 /*
  * Errors split by kind. LOSTSYNC is routine, reported on every buffer refill
  * while libmad hunts for a frame header, and costs nothing. Anything else is
  * a frame that decoded to silence.
  */
-int  audio_err_sync(void);
-int  audio_err_real(void);
-int  audio_last_err(void);
 int  audio_rate_needed(void);
 
 /* Sample rate and channel count taken from the first decoded frame. */
-void audio_format(int *hz, int *channels);
 
 /* Why the last attempt failed, for the error line. */
 const char *audio_error(void);

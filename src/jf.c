@@ -1,5 +1,12 @@
-#include "freeze.h"
+/*
+ * The Jellyfin client: every API request the app makes. Connecting, users
+ * and signing in, library pages, details, HOME, stream URLs, images, and
+ * the background thread that sends stop reports and resume points.
+ * Requests run on the screen thread inside jobs, except the reports.
+ */
+
 #include "jf.h"
+#include "freeze.h"
 #include "settings.h"
 #include "net.h"
 #include "json.h"
@@ -22,7 +29,7 @@ int    jf_user_count = 0;
 char   jf_user_id[40]   = "";
 char   jf_user_name[64] = "";
 
-JfItem jf_items[JF_PAGE];
+JfItem jf_items[JF_PAGE_MAX];
 int     jf_item_count  = 0;
 int     jf_total_count = 0;
 
@@ -30,6 +37,7 @@ JfMusicLevel jf_music_level = JF_MUSIC_ARTISTS;
 char         jf_artist_name[128];
 char         jf_artist_id[40];
 
+/* Music: go into an artist (their albums). */
 void jf_music_enter_artist(const char *id, const char *name)
 {
 	snprintf(jf_artist_id,   sizeof(jf_artist_id),   "%s", id   ? id   : "");
@@ -42,6 +50,7 @@ JfTvLevel jf_tv_level = JF_TV_SHOWS;
 char      jf_show_id[40];
 char      jf_show_name[128];
 
+/* Series: go into a show (its seasons). */
 void jf_tv_enter_show(const char *id, const char *name)
 {
 	snprintf(jf_show_id,   sizeof(jf_show_id),   "%s", id   ? id   : "");
@@ -50,6 +59,7 @@ void jf_tv_enter_show(const char *id, const char *name)
 	jf_start_index = 0;
 }
 
+/* Series: back to the list of shows. */
 void jf_tv_up(void)
 {
 	jf_show_id[0]   = '\0';
@@ -58,6 +68,7 @@ void jf_tv_up(void)
 	jf_start_index  = 0;
 }
 
+/* Music: back to the list of artists. */
 void jf_music_up(void)
 {
 	jf_artist_name[0] = '\0';
@@ -98,8 +109,14 @@ static char g_err_body[320]  = "";
 /* ------------------------------------------------------------------ */
 
 const char *jf_err_title(void) { return g_err_title; }
+
+/* The last error's explanation, for the error screen. */
 const char *jf_err_body(void)  { return g_err_body;  }
 
+/*
+ * Record an error title and printf-style explanation; returns -1 so
+ * callers can 'return err(...)'.
+ */
 static int err(const char *title, const char *fmt, ...)
 {
 	va_list ap;
@@ -136,6 +153,10 @@ static void beside_settings(char *out, int max, const char *name)
 #define DUMP_NOTE ""
 #endif
 
+/*
+ * Development builds (DEBUG_UI): write the last raw response to
+ * jfdebug.txt beside settings.txt. Does nothing otherwise.
+ */
 static void dump_reply(const char *label)
 {
 #if !DEBUG_UI
@@ -228,6 +249,12 @@ __attribute__((unused))
 static char g_asm[HTTP_RAW_MAX];
 
 __attribute__((unused))
+
+/*
+ * Fetch a large reply in byte ranges (http_get_range) small enough to
+ * arrive intact, reassembling it in g_asm; each slice is retried on its
+ * own.
+ */
 static int fetch_sliced(const char *path, int auth, int *status)
 {
 	long total = -1;
@@ -378,6 +405,11 @@ static int fetch_image_at(const char *item_id, int width, int quality)
 	return n;
 }
 
+/*
+ * An item's poster as JPEG bytes, width-limited and with the given
+ * quality; *out points to the shared image buffer. Returns the byte count
+ * or negative.
+ */
 int jf_fetch_image(const char *item_id, int width, int quality,
                    const unsigned char **out)
 {
@@ -385,6 +417,11 @@ int jf_fetch_image(const char *item_id, int width, int quality,
 	return fetch_image_at(item_id, width, quality);
 }
 
+/*
+ * GET a JSON reply and parse it, retrying a few times on transport errors
+ * or truncated JSON. Returns the token count (or negative); *status and
+ * *body as for http_get.
+ */
 static int get_json(const char *path, int auth, int *status, char **body)
 {
 	int last = -1;
@@ -458,10 +495,19 @@ void jf_init(void)
 		snprintf(jf_url, sizeof(jf_url), "http://%.120s", settings.server);
 }
 
+/* The server's host, parsed from jf_url. */
 const char *jf_host(void) { return g_host; }
+
+/* The server's port, parsed from jf_url. */
 int         jf_port(void) { return g_port; }
+
+/* The signed-in user's access token, '' before sign-in. */
 const char *jf_key(void)  { return g_key;  }
 
+/*
+ * The URL path of a music track's audio stream: MP3 as is, anything else
+ * transcoded to MP3 by the server.
+ */
 const char *jf_track_stream_path(const char *track_id)
 {
 	static char path[512];
@@ -504,6 +550,10 @@ const char *jf_track_stream_path(const char *track_id)
 	return path;
 }
 
+/*
+ * Save the server address to settings.txt after a successful connect (only
+ * if it changed).
+ */
 void jf_save_url(void)
 {
 #if SAVE_URL
@@ -675,6 +725,7 @@ void jf_sign_out_local(void)
 	net_set_device_id(NULL);
 }
 
+/* Make a saved sign-in the current user: token, id, name and device id. */
 static void become(const SavedUser *u)
 {
 	snprintf(g_key,        sizeof(g_key),        "%s", u->token);
@@ -726,6 +777,10 @@ static int json_put(char *out, int max, const char *s)
 	return o;
 }
 
+/*
+ * Sign in with a name and password; see jf.h. Saves the sign-in to
+ * settings.txt.
+ */
 int jf_sign_in(const char *name, const char *password)
 {
 	SavedUser u;
@@ -794,6 +849,7 @@ int jf_sign_in(const char *name, const char *password)
 	return 0;
 }
 
+/* Use a saved sign-in, checking the server still accepts it; see jf.h. */
 int jf_resume_user(const char *name)
 {
 	const SavedUser *u = settings_user(name);
@@ -831,6 +887,10 @@ int jf_resume_user(const char *name)
 	return 0;
 }
 
+/*
+ * End a saved sign-in on the server (/Sessions/Logout) and remove it from
+ * settings.txt.
+ */
 void jf_sign_out(const char *name)
 {
 	const SavedUser *u = settings_user(name);
@@ -1290,6 +1350,10 @@ static int fetch_track_run(const char *album_id, int start_index, int limit)
 	return added;
 }
 
+/*
+ * An album's tracks into jf_tracks, in pages, with the album's artist and
+ * description.
+ */
 int jf_load_tracks(const char *album_id, const char *album_name, int year)
 {
 	jf_track_count     = 0;
@@ -1480,6 +1544,7 @@ static void stream_label(int obj, int index, char *out, int len)
 		snprintf(out, len, "Track %d", index);
 }
 
+/* Round down to an even number (video dimensions must be even). */
 static int even_down(int v) { return (v / 2) * 2; }
 
 /*
@@ -1525,35 +1590,79 @@ static void predict(int sw, int sh, int bw, int bh, int *pw, int *ph)
 	*ph = even_down((int)((ch < lh) ? ch : lh));
 }
 
+/*
+ * The transcode size for a source picture: the largest box within 640x480
+ * with the source's aspect, both sides whole macroblocks (multiples of
+ * 16), so the PS2's decoder gets exactly what it handles best.
+ */
 void jf_video_box(int src_w, int src_h, int *w, int *h)
 {
 	/*
-	 * A box that sits exactly on the source aspect, with both dimensions
-	 * a whole number of macroblocks.
+	 * The size to ask Jellyfin for: just enough to fill what the picture
+	 * covers on screen, no more.
 	 *
-	 * Exact matters: an approximate box gets re-derived by the expression
-	 * above and lands off a macroblock boundary, which the encoder pads.
-	 * 4:3 gives 640x480 and 16:9 gives 512x288, both precise. Aspects with
-	 * no exact fit fall back to the largest box, and the few padded rows
-	 * are cropped when drawing.
+	 * 1. Where the picture goes. The screen is the display profile's video
+	 *    box (640x480 and 4:3 in 480i); a picture
+	 *    of the film's intended shape (jf_detail.aspect_milli, see jf.h)
+	 *    covers all of it (4:3), or the full width with bars (wider), or
+	 *    the full height with bars (narrower). A 16:9 film: 640x360.
+	 *
+	 * 2. What to ask for. Jellyfin always keeps the file's STORED
+	 *    proportions when it shrinks - which differ from the intended
+	 *    ones for DVDs, whose pixels are not square. So the request has
+	 *    the stored proportions, and is the smallest size of them that
+	 *    covers the box from step 1 in both directions: every screen
+	 *    column and line then gets its own picture pixel.
+	 *
+	 * 3. Within 640x480, the largest picture the decoder, its texture and
+	 *    the stream are set up for.
+	 *
+	 * For ordinary files, stored and intended shapes are the same, so
+	 * this is simply the screen box: 640x480 for 4:3, 640x360 for 16:9
+	 * (it was 512x288, stretched by a quarter), 640x266 for 2.4:1. Sizes
+	 * that are not whole 16-pixel macroblocks are coded with a few rows of
+	 * padding, which the drawing crops (see predict and video_set_crop).
 	 */
-	*w = VIDEO_MAX_W;
-	*h = VIDEO_MAX_H;
+	*w = disp->video_box_w;
+	*h = disp->video_box_h;
 
 	if (src_w > 0 && src_h > 0) {
-		for (int b = VIDEO_MAX_H / 16; b >= 9; b--) {
-			int a = (src_w * b + src_h / 2) / src_h;
+		float stored = (float)src_w / src_h;
+		float shape  = jf_detail.aspect_milli > 0
+		               ? jf_detail.aspect_milli / 1000.0f : stored;
 
-			if (a < 1 || a * 16 > VIDEO_MAX_W)
-				continue;
+		/* 1. The box on screen; 1.332 rather than 4/3, so a 4:3 shape
+		 *    read as 1333/1000 counts as filling the width. */
+		float dw, dh;
 
-			/* Cross-multiplied, so no rounding creeps in. */
-			if (a * src_h == b * src_w) {
-				*w = a * 16;
-				*h = b * 16;
-				break;
-			}
+		if (shape >= 1.332f) {
+			dw = disp->video_box_w;
+			dh = disp->video_box_w / shape;
+		} else {
+			dh = disp->video_box_h;
+			dw = disp->video_box_h * shape;
 		}
+
+		/* 2. Stored proportions, covering that box. */
+		float rw = dh * stored > dw ? dh * stored : dw;
+		float rh = rw / stored;
+
+		/* 3. Within the maximum. */
+		if (rw > disp->video_box_w) {
+			rw = disp->video_box_w;
+			rh = rw / stored;
+		}
+		if (rh > disp->video_box_h) {
+			rh = disp->video_box_h;
+			rw = rh * stored;
+		}
+
+		/* Even numbers, nearest. */
+		*w = 2 * (int)(rw / 2.0f + 0.5f);
+		*h = 2 * (int)(rh / 2.0f + 0.5f);
+
+		if (*w > disp->video_box_w) *w = disp->video_box_w;
+		if (*h > disp->video_box_h) *h = disp->video_box_h;
 	}
 
 	predict(src_w, src_h, *w, *h, &jf_video_pic_w, &jf_video_pic_h);
@@ -1564,12 +1673,12 @@ void jf_video_box(int src_w, int src_h, int *w, int *h)
 static char g_play_session[24];
 static char g_play_device[64];
 
-const char *jf_video_stream_path_tracks(const char *item_id,
-                                        int audio_index, int sub_index)
-{
-	return jf_video_stream_path_at(item_id, audio_index, sub_index, 0);
-}
-
+/*
+ * The URL path of a film's transcoded stream: MPEG-2 video and MP2 audio
+ * in a transport stream, at jf_video_box's size, with the chosen audio and
+ * burned-in subtitle tracks, from start_ticks, under a new PlaySessionId
+ * and DeviceId.
+ */
 const char *jf_video_stream_path_at(const char *item_id, int audio_index,
                                     int sub_index, long long start_ticks)
 {
@@ -1588,7 +1697,7 @@ const char *jf_video_stream_path_at(const char *item_id, int audio_index,
 	                 "&audioBitRate=192000"
 	                 "&width=%d&height=%d"
 	                 "&videoBitRate=%d",
-	                 item_id, w, h, VIDEO_BITRATE);
+	                 item_id, w, h, disp->video_bitrate);
 
 	/*
 	 * The frame rate, which is not optional.
@@ -1681,6 +1790,7 @@ const char *jf_video_stream_path_at(const char *item_id, int audio_index,
 	return path;
 }
 
+/* The PlaySessionId of the stream last requested. */
 const char *jf_play_session(void) { return g_play_session; }
 
 /* ------------------------------------------------------------------ */
@@ -1716,8 +1826,13 @@ static u8            g_rq_stack[16 * 1024] __attribute__((aligned(16)));
 
 static int g_resume_status;
 
+/* HTTP status of the last resume-point save, for the film page. */
 int jf_resume_status(void) { return g_resume_status; }
 
+/*
+ * Send one queued report, trying its alternative path on 404/405 (older
+ * servers).
+ */
 static void report_send(const Report *r)
 {
 	int st = net_http_send(jf_host(), jf_port(), r->method, r->path,
@@ -1731,6 +1846,10 @@ static void report_send(const Report *r)
 		g_resume_status = st;
 }
 
+/*
+ * The background reports thread: waits on its semaphore, then sends queued
+ * reports in order. The only caller of net_http_send for reports.
+ */
 static void reporter(void *arg)
 {
 	(void)arg;
@@ -1747,6 +1866,7 @@ static void reporter(void *arg)
 	}
 }
 
+/* Create the reports thread and its semaphore, once, on first use. */
 static void reporter_start(void)
 {
 	extern void *_gp;
@@ -1819,6 +1939,10 @@ static void report(const char *method, const char *path, const char *alt,
 	SignalSema(g_rq_sema);
 }
 
+/*
+ * Wait up to ms for queued reports to be sent (before quitting, or before
+ * asking the server for HOME).
+ */
 void jf_reports_wait(int ms)
 {
 	for (int t = 0; t < ms && (g_rq_tail != g_rq_head || g_rq_busy); t += 50)
@@ -1832,6 +1956,10 @@ static char      g_stop_device[64];
 static long long g_stop_pos;
 static int       g_stop_pending;
 
+/*
+ * Remember a stream's stop report (item, position, session, device) to
+ * send after the next stream has been requested; see the comment above.
+ */
 void jf_video_stop_later(const char *item_id, long long pos_ticks)
 {
 	if (!g_play_session[0])
@@ -1849,6 +1977,7 @@ void jf_video_stop_later(const char *item_id, long long pos_ticks)
 	g_play_session[0] = '\0';
 }
 
+/* Queue the remembered stop report and the request to end its transcode. */
 void jf_video_stop_flush(void)
 {
 	char path[400];
@@ -1882,12 +2011,18 @@ void jf_video_stop_flush(void)
 	report("DELETE", path, NULL, NULL, 0);
 }
 
+/* Report a stream stopped now: stop_later then flush. */
 void jf_video_stopped(const char *item_id, long long pos_ticks)
 {
 	jf_video_stop_later(item_id, pos_ticks);
 	jf_video_stop_flush();
 }
 
+/*
+ * Save the resume point (or mark the item played above 90%), in the
+ * background. Returns the position kept, so the film page can show Resume
+ * at once.
+ */
 long long jf_save_position(const char *item_id, long long pos_ticks,
                            long long runtime_ticks)
 {
@@ -1923,12 +2058,6 @@ long long jf_save_position(const char *item_id, long long pos_ticks,
 	report("POST", path, alt, body, 1);
 
 	return keep;
-}
-
-const char *jf_video_stream_path(const char *item_id)
-{
-	/* Whatever Jellyfin considers default, and no subtitles. */
-	return jf_video_stream_path_tracks(item_id, -1, -1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2006,6 +2135,7 @@ static int read_home_items(JfHomeItem *out, int max)
 	return n;
 }
 
+/* Continue Watching and Next Up for the signed-in user; see jf.h. */
 int jf_load_home(void)
 {
 	static char path[384];
@@ -2044,11 +2174,29 @@ int jf_load_home(void)
 
 	jf_home_cw_count = read_home_items(jf_home_cw, JF_HOME_MAX);
 
-	/* The next episode to watch in each show this user is following. */
-	snprintf(path, sizeof(path),
-	         "/Shows/NextUp?userId=%s&Limit=%d"
-	         "&EnableImages=false&EnableUserData=false&api_key=%s",
-	         jf_user_id, JF_HOME_MAX, jf_key());
+	/*
+	 * The next episode to watch in each show this user is following.
+	 *
+	 * NextUpDateCutoff is what Jellyfin's own web client sends: a year
+	 * before today. Without it, Jellyfin left out shows with nothing
+	 * watched yet - a newly added series, for one - and the row stayed
+	 * empty where the web client showed them. Today is the server's date
+	 * (net_server_date), not the PS2's clock, which is often wrong.
+	 */
+	{
+		char cutoff[64] = "";
+		int  y, m, d;
+
+		if (net_server_date(&y, &m, &d))
+			snprintf(cutoff, sizeof(cutoff),
+			         "&NextUpDateCutoff=%04d-%02d-%02dT00%%3A00%%3A00Z",
+			         y - 1, m, (m == 2 && d == 29) ? 28 : d);
+
+		snprintf(path, sizeof(path),
+		         "/Shows/NextUp?userId=%s&Limit=%d%s"
+		         "&EnableImages=false&EnableUserData=false&api_key=%s",
+		         jf_user_id, JF_HOME_MAX, cutoff, jf_key());
+	}
 
 	toks = get_json(path, 1, &status, &body);
 
@@ -2065,6 +2213,7 @@ int jf_load_home(void)
 
 JfHomeItem jf_next;
 
+/* The episode after jf_detail's; see jf.h. */
 int jf_find_next(void)
 {
 	static char path[512];
@@ -2101,6 +2250,100 @@ int jf_find_next(void)
 
 	jf_next = two[1];
 	return 1;
+}
+
+/*
+ * One item's full detail into jf_detail: overview, picture size, runtime,
+ * resume point, and its audio and subtitle tracks.
+ */
+/*
+ * Jellyfin's AspectRatio string as width/height x 1000: "4:3" -> 1333,
+ * "16:9" -> 1778, "1.5:1" -> 1500, "2.35:1" -> 2350. Integers and up to
+ * three decimals on either side, parsed by hand (the EE builds single-
+ * float, and nothing here needs more). 0 if it cannot be read.
+ */
+static int parse_ratio(const char *s)
+{
+	long long part[2] = { 0, 0 };   /* each side, times 1000 */
+
+	for (int side = 0; side < 2; side++) {
+		long long whole = 0, frac = 0;
+		int digits = 0, places = 0;
+
+		while (*s >= '0' && *s <= '9') {
+			whole = whole * 10 + (*s++ - '0');
+			digits++;
+		}
+
+		if (*s == '.') {
+			s++;
+			while (*s >= '0' && *s <= '9') {
+				if (places < 3) {
+					frac = frac * 10 + (*s - '0');
+					places++;
+				}
+				s++;
+				digits++;
+			}
+		}
+
+		while (places < 3) {
+			frac *= 10;
+			places++;
+		}
+
+		if (!digits)
+			return 0;
+
+		part[side] = whole * 1000 + frac;
+
+		if (side == 0) {
+			if (*s != ':')
+				return 0;
+			s++;
+		}
+	}
+
+	if (part[1] <= 0)
+		return 0;
+
+	return (int)(part[0] * 1000 / part[1]);
+}
+
+/*
+ * The shape to draw jf_detail's picture with; see aspect_milli in jf.h.
+ *
+ *   Jellyfin's AspectRatio, if it is sensible (1.0 to 2.5) - the normal
+ *   case, and the one that fixes DVDs.
+ *
+ *   But a DVD-sized file (about 704-720 wide, 480 or 576 tall) whose
+ *   AspectRatio is just its stored size - square pixels, which DVD video
+ *   never has - lost its note when it was converted. Its real shape is
+ *   unknown: assume 4:3, what most material of that era is, and let the
+ *   viewer change it.
+ *
+ *   No usable AspectRatio on any other file: its stored size, as before.
+ */
+static void decide_aspect(int reported)
+{
+	int w = jf_detail.width, h = jf_detail.height;
+	int stored = (w > 0 && h > 0) ? (int)((long long)w * 1000 / h) : 0;
+	int a = (reported >= 1000 && reported <= 2500) ? reported : 0;
+
+	int dvd_size = (w >= 700 && w <= 720) &&
+	               ((h >= 470 && h <= 480) || (h >= 560 && h <= 576));
+
+	/* Square pixels: the reported shape is the stored one, within 1%. */
+	int square = (a == 0) ||
+	             (stored > 0 && a * 100 >= stored * 99 && a * 100 <= stored * 101);
+
+	if (dvd_size && square) {
+		jf_detail.aspect_milli = 1333;
+		jf_detail.aspect_sure  = 0;
+	} else {
+		jf_detail.aspect_milli = a ? a : stored;
+		jf_detail.aspect_sure  = 1;
+	}
 }
 
 int jf_load_detail(const char *id)
@@ -2192,6 +2435,8 @@ int jf_load_detail(const char *id)
 	jf_audio_count = 0;
 	jf_sub_count   = 0;
 
+	int reported_aspect = 0;     /* the video stream's AspectRatio */
+
 	int streams = json_get(obj, "MediaStreams");
 
 	if (streams >= 0 && json_is_array(streams)) {
@@ -2218,6 +2463,14 @@ int jf_load_detail(const char *id)
 
 				if (vr >= 0)
 					jf_detail.fps_milli = json_milli(vr);
+
+				/* The intended shape: see decide_aspect. */
+				{
+					char ar[24];
+
+					json_str(json_get(k, "AspectRatio"), ar, sizeof(ar));
+					reported_aspect = parse_ratio(ar);
+				}
 			} else if (strcmp(type, "Audio") == 0 &&
 			           jf_audio_count < JF_STREAM_MAX && idx >= 0) {
 				JfStream *a = &jf_audio[jf_audio_count++];
@@ -2256,6 +2509,8 @@ int jf_load_detail(const char *id)
 			k = json_skip(k);
 		}
 	}
+
+	decide_aspect(reported_aspect);
 
 	/* Not requested any more, so take it from the listing. */
 	if (jf_detail.year == 0) {

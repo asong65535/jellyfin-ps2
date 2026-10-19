@@ -12,7 +12,7 @@
  *   ip=192.168.50.90      static, or auto's fallback
  *   mask=255.255.255.0
  *   gateway=192.168.50.1
- *   video=480i            480i or 480p (480p: not used yet)
+ *   video=480i            480i, 480p, 240p or 1080i (the others ask to confirm)
  *   user=Name|id|token|device   one per signed-in user, written by the app
  *   end_margin_kb=32      for tuning how films end (see tuto.txt)
  *   end_early_ms=200
@@ -33,6 +33,9 @@ enum { NET_AUTO = 0, NET_DHCP, NET_STATIC };
  */
 #define SETTINGS_MAX_USERS 8
 
+/* The display mode settings.txt asks for (video=). */
+enum { VIDEO_480I = 0, VIDEO_480P, VIDEO_240P, VIDEO_1080I };
+
 typedef struct {
 	char name[64];
 	char id[40];
@@ -46,7 +49,7 @@ typedef struct {
 	char ip[16];        /* "" if none */
 	char mask[16];
 	char gateway[16];
-	int  video_480p;    /* read, kept for the 480p work, not used yet */
+	int  video_mode;    /* VIDEO_480I, VIDEO_480P or VIDEO_240P (main.c) */
 	int  end_margin_kb; /* end once the stream is over and less is left */
 	int  end_early_ms;  /* end this long before the runtime; 0 = off */
 

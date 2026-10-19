@@ -15,7 +15,13 @@ play.
 - **HOME:** Continue Watching (with progress) and Next Up.
 - **Library:** Movies, Series (seasons and episodes), Music (artists and
   albums), and Search, with posters and descriptions.
-- **Video:** 640x480 MPEG-2 playback with sound in sync, pause, -10 s / +20 s,
+- **Display modes:** 480i (default), 480p, 240p and 1080i. The app always
+  starts in 480i and asks to confirm the chosen mode, so a TV that cannot
+  show it never leaves you with a black screen. In 1080i the menus use the
+  whole 16:9 screen.
+- **Video:** MPEG-2 playback up to 640x480 with sound in sync, each film
+  asked at the size it fills on screen, DVD picture
+  shapes (4:3 and 16:9) shown correctly, pause, -10 s / +20 s,
   a time bar, Resume from where you stopped (saved in Jellyfin), audio track
   choice, and a soft ending.
 - **Subtitles:** text tracks (SRT, ASS, WebVTT) are drawn by the PS2 itself,
@@ -26,7 +32,8 @@ play.
   an episode has really ended.
 - **Music:** album playback with play, pause, stop and track skipping.
 - **Settings in one file:** `settings.txt` beside the ELF holds the server,
-  the network setup and the signed-in users. It is optional.
+  the network setup, the display mode and the signed-in users. It is
+  optional.
 
 ## Requirements
 
@@ -55,6 +62,17 @@ off: that is when the sign-in is being saved to the stick.
 
 ## If something goes wrong
 
+- **The screen goes black after the splash**: the TV cannot show the mode
+  set in `settings.txt` (480p, 240p or 1080i). Wait 10 seconds and the app
+  returns to 480i by itself, or hold R1 while it starts to stay in 480i.
+  480p and 1080i need the PS2's component output (YPbPr, or RGB with sync
+  on green), not the composite or S-Video cable.
+
+- **A DVD-sized video looks too wide or too thin**: some converted DVDs
+  lost the note saying their shape. The app then assumes 4:3; press
+  Triangle during playback to switch between 4:3 and 16:9. (Triangle only
+  appears when the shape is uncertain.)
+
 - **"Playback stopped unexpectedly (D)"** (or another letter) on a film's
   page: a part of the app stopped responding during video playback. The
   app set it aside and stopped the film instead of freezing; play it again
@@ -77,13 +95,23 @@ cd jellyfin-ps2
 docker compose run --rm build
 ```
 
-The result is `jellyfin-ps2.elf` in the project folder. The version shown on
-the splash screen comes from `VERSION` in the `Makefile`; to set it for one
-build:
+The result is `jellyfin-ps2.elf` in the project folder. The version shown
+on the splash screen comes from `VERSION` in the `Makefile`; to set it for
+one build:
 
 ```sh
-docker compose run --rm build -c "make VERSION=1.0.1"
+docker compose run --rm build -c "make VERSION=2.0.1"
 ```
+
+During development, a build name can be added with `BUILD`. It goes into
+the ELF's name and under the version on the splash, so the stick always
+says which build it holds:
+
+```sh
+docker compose run --rm build -c "make BUILD=v58"
+```
+
+gives `jellyfin-ps2-v58.elf` and "v2.0.0 build v58".
 
 ### What is in the build image, and why
 
@@ -138,7 +166,13 @@ build.
 - `DEBUG_UI` (default 0): set to 1 to get the on-screen video readout
   (Square during playback), technical details on error screens, and
   `jfdebug.txt` / `jfstuck.txt` written beside the ELF when something fails.
-  Release builds must keep it at 0.
+  It also adds two calibration screens: a geometry pattern (R2 on any menu
+  screen: rulers from each edge, a 5% safe frame, a circle, and the GS
+  values) and colour ramps (L2 on the connect screen). Release builds must
+  keep it at 0.
+- `TEST_16BIT_FB` (default 0): forces 16-bit framebuffers with dithering
+  in the 4:3 modes, to compare with the colour ramps. 1080i always uses
+  16-bit.
 - `DEBUG_BOOT_LOG`, `DEBUG_NET_LOG`, `DEBUG_POSTER_INFO`: more detailed
   logs for start-up, networking and artwork.
 
@@ -154,7 +188,7 @@ hang on the very last bytes of a stream, so playback stops just before them.
 - [jsmn](https://github.com/zserge/jsmn) for JSON parsing.
 - The [Jellyfin](https://jellyfin.org) project.
 - Other Jellyfin clients for limited hardware, whose code informed this one,
-  notably Pocketfin (PSP), and clients for PS3 and Wii U.
+  notably ORBIT (PS2), Pocketfin (PSP), and clients for PS3 and Wii U.
 
 ---
 
@@ -236,10 +270,30 @@ gateway
     is right for a direct cable.
 
 video
-    480i or 480p. Default: 480i.
-    480p is not used yet. When it is, the app will always start in
-    480i and ask you to confirm 480p, so you can never get stuck with a
-    black screen.
+    480i, 480p, 240p or 1080i. Default: 480i.
+    480p is sharper and does not flicker, but needs the PS2's
+    component output - a YPbPr cable (green, blue, red plugs), or RGB
+    with sync on green, depending on the cable and the console's video
+    output setting - and a TV or monitor that accepts 480p on it.
+    The app always starts in 480i, then switches and asks "Keep 480p?":
+    press X to keep it. If you press nothing for 10 seconds (or Circle),
+    it goes back to 480i by itself, so a screen that cannot show 480p
+    never leaves you stuck. The question comes back at every start.
+    Holding R1 while the app starts skips it and stays in 480i.
+
+    240p sends the same 240 lines on every refresh, like classic
+    consoles: no flicker and visible scanlines, at half the detail of
+    480i. The menus look the same as in 480i, drawn on half the lines,
+    and films are asked from the server at the size the screen
+    shows (320 pixels wide), so they start and seek faster. It suits
+    15 kHz CRTs and upscalers (OSSC, RetroTINK); some modern TVs do not
+    accept 240p. It asks "Keep 240p?" at start-up, exactly like 480p.
+
+    1080i is for HD TVs and HD CRTs with a component input (YPbPr; some
+    also accept RGB with sync on green). The screen is 16:9: widescreen
+    films fill it, 4:3 films get bars on the sides. The menus use the
+    whole width: 5 posters per row on HOME, 10 per page in the library.
+    It asks "Keep 1080i?" at start-up, like 480p.
 
 4. EXAMPLES
 -----------
@@ -376,7 +430,7 @@ network=dhcp
 #   mask=255.255.255.0
 #   gateway=192.168.50.1
 
-# Video output: 480i or 480p (480p is not used yet)
+# Video output: 480i, 480p, 240p or 1080i (480p/1080i need component)
 video=480i
 
 # Signed-in users are added below by the app (user=...).

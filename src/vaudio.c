@@ -1,5 +1,11 @@
-#include "freeze.h"
+/*
+ * The sound of a video: a thread that decodes the MP2 audio with libmad,
+ * feeds audsrv, and publishes the playback clock that pictures are timed
+ * against.
+ */
+
 #include "vaudio.h"
+#include "freeze.h"
 #include "screens.h"
 #include "config.h"
 #include "net.h"          /* net_snooze */
@@ -60,12 +66,14 @@ static char g_stack[64 * 1024] __attribute__((aligned(16)));
  */
 #define STACK_GUARD 1024
 
+/* Fill the bottom of the sound thread's stack with a known pattern. */
 static void stack_guard_fill(char *stk)
 {
 	for (int i = 0; i < STACK_GUARD; i++)
 		stk[i] = (char)0xA5;
 }
 
+/* Whether that pattern is intact (1) or the stack overran into it (0). */
 static int stack_guard_ok(const char *stk)
 {
 	for (int i = 0; i < STACK_GUARD; i++)
@@ -75,6 +83,7 @@ static int stack_guard_ok(const char *stk)
 	return 1;
 }
 
+/* The sound thread's stack guard, for the DEBUG_UI readout. */
 int vaudio_stack_ok(void) { return stack_guard_ok(g_stack); }
 
 static volatile int g_run;       /* keep decoding */
@@ -130,9 +139,16 @@ static long long g_skip_w;    /* samples skipped, published by publish() */
 
 void vaudio_pause(int on) { g_paused = on ? 1 : 0; }
 
+/* Audio frames decoded this stream. */
 int         vaudio_frames(void)    { return g_frames; }
+
+/* Times the sound ran dry and silence was played instead. */
 int         vaudio_underruns(void) { return g_underruns; }
 
+/*
+ * The readout line about the sound thread (DEBUG_UI): stage, rate,
+ * channels, errors, clock state, loop count.
+ */
 const char *vaudio_debug(void)
 {
 	static char buf[64];
@@ -141,7 +157,7 @@ const char *vaudio_debug(void)
 	         g_stage, g_hz, g_ch, g_errs, g_clock_ok, g_loops);
 	return buf;
 }
-const char *vaudio_error(void)     { return g_err; }
+
 
 /*
  * libmad works in 28-bit fixed point. Round, clip and drop to signed 16-bit,
@@ -195,6 +211,11 @@ static void publish(void)
 	g_seq++;
 }
 
+/*
+ * The playback clock: the timestamp of the sound being heard right now, at
+ * 90 kHz, from samples handed to audsrv minus those still queued,
+ * extrapolated from when it was published. 0 if not available.
+ */
 int vaudio_clock90(long long *pts90)
 {
 	long long p0 = scr_video_audio_pts0();
@@ -239,12 +260,6 @@ int vaudio_clock90(long long *pts90)
 	return 1;
 }
 
-int vaudio_played_ms(void)
-{
-	int hz = g_clock_hz;
-
-	return (hz > 0 && g_played > 0) ? (int)(g_played * 1000 / hz) : 0;
-}
 
 /*
  * Top up the bitstream buffer from the demuxer.
@@ -417,6 +432,12 @@ static void release(void)
 	g_idle = 1;
 }
 
+/*
+ * The video's sound thread: waits for the first picture, decodes MP2
+ * frames with libmad from the audio ring, feeds audsrv, and publishes the
+ * clock after each chunk; plays silence while paused or starved. The only
+ * caller of audsrv during video.
+ */
 static void worker(void *arg)
 {
 	(void)arg;
@@ -551,6 +572,40 @@ static void worker(void *arg)
 					g_skip_w += from;
 				}
 
+				/*
+				 * The other way round: the sound's first frame
+				 * comes AFTER the first picture. Playing it at
+				 * once started the clock at the sound's time, so
+				 * the clock ran that far ahead of every picture -
+				 * and pictures more than two frames behind are
+				 * dropped as late. On some files (still pictures,
+				 * PAL episodes) the gap was just over that, and a
+				 * steady share of pictures was dropped for the
+				 * whole film; a seek, which starts both streams
+				 * together, cured it. So play silence for the gap
+				 * first and count it, as the sound would have
+				 * been: the clock then starts at the picture.
+				 * Capped at two seconds, for a broken stream.
+				 */
+				if (p0 >= 0 && v0 >= 0 && at > v0 && g_decoded == 0) {
+					long long gap = (at - v0) * g_hz / 90000;
+
+					if (gap > 2LL * g_hz)
+						gap = 2LL * g_hz;
+
+					g_skip_w -= gap;
+
+					long long bytes = gap * 2 * g_ch;
+
+					while (bytes > 0 && g_run) {
+						int n = bytes > (long long)sizeof(g_zero)
+						        ? (int)sizeof(g_zero) : (int)bytes;
+
+						feed(g_zero, n);
+						bytes -= n;
+					}
+				}
+
 				g_aligned = 1;
 			}
 
@@ -592,6 +647,7 @@ static void worker(void *arg)
 	}
 }
 
+/* Prepare a new stream's sound and start (or wake) the thread. */
 int vaudio_start(void)
 {
 	g_err[0]   = '\0';
@@ -650,6 +706,10 @@ int vaudio_start(void)
 	return 0;
 }
 
+/*
+ * Ask the sound thread to stop and wait (briefly) until it has released
+ * audsrv itself.
+ */
 void vaudio_stop(void)
 {
 	/*
@@ -683,4 +743,7 @@ void vaudio_stop(void)
 	mad_stream_finish(&g_stream);
 }
 
-int vaudio_loops(void) { return g_loops; }
+
+/* Samples skipped (or, negative, silence added) to start with the first
+ * picture: for the DEBUG_UI readout. */
+long long vaudio_skip(void) { return g_skip; }

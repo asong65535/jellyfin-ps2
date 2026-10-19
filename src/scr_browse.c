@@ -1,3 +1,9 @@
+/*
+ * The library screen: tabs (HOME, Movies, Series, Music, Search), a 3x2
+ * poster grid per page, an A-Z rail to jump, and the jobs that load pages,
+ * artwork, albums, seasons and film pages.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "jf.h"
@@ -28,8 +34,8 @@ static const char *TAB_NAMES[JF_TAB_COUNT] =
 
 typedef enum { FOCUS_GRID, FOCUS_TABS, FOCUS_RAIL } Focus;
 
-#define COLS 3
-#define ROWS 2
+/* The grid is COLS x 2 posters, one page; COLS comes from the layout. */
+#define COLS (lay->grid_cols)
 
 /* TILE rather than POSTER: POSTER_H is poster.h's include guard. */
 #define TILE_W 90.0f
@@ -37,7 +43,13 @@ typedef enum { FOCUS_GRID, FOCUS_TABS, FOCUS_RAIL } Focus;
 #define HGAP     26.0f
 #define VGAP     14.0f
 
-#define GRID_X 178.0f
+/*
+ * The grid centred across the screen, nudged 19 right of centre to clear
+ * the letter rail: 178 with 3 columns on 640 (as it always was), 169 with
+ * 5 columns on the wide layout's 853.
+ */
+#define GRID_W ((float)COLS * (TILE_W + HGAP) - HGAP)
+#define GRID_X ((SCR_W - GRID_W) * 0.5f + 19.0f)
 #define GRID_Y 92.0f
 
 #define RAIL_X     30.0f
@@ -47,11 +59,11 @@ typedef enum { FOCUS_GRID, FOCUS_TABS, FOCUS_RAIL } Focus;
 
 /* Why each slot is empty, shown in the placeholder. Cheap to keep and it is
  * the difference between "no images" and knowing which stage failed. */
-__attribute__((unused)) static int g_art_bytes[POSTER_SLOTS];
-__attribute__((unused)) static int g_art_rc[POSTER_SLOTS];
+__attribute__((unused)) static int g_art_bytes[POSTER_SLOTS_MAX];
+__attribute__((unused)) static int g_art_rc[POSTER_SLOTS_MAX];
 
 static Focus g_focus = FOCUS_GRID;
-static int   g_sel;            /* index within the page, 0 to 5 */
+static int   g_sel;            /* index within the page */
 static int   g_letter;         /* rail cursor, 0 to 25 */
 
 /* ------------------------------------------------------------------ */
@@ -88,6 +100,11 @@ int scr_load_poster(int slot, const char *id, int max_width)
 	return load_one_poster(slot, id, max_width);
 }
 
+/*
+ * Fetch one poster into a slot, walking POSTER_LADDER (sizes and JPEG
+ * qualities) with POSTER_TRIES attempts each, until one decodes. Returns
+ * the bytes fetched, 0 if every rung failed.
+ */
 static int load_one_poster(int slot, const char *id, int max_width)
 {
 	static const int ladder[][2] = POSTER_LADDER;
@@ -159,6 +176,10 @@ static void load_artwork(void)
 	net_snooze(250);
 }
 
+/*
+ * Job: load the current tab's page of items (jf_load_items), then its
+ * artwork, then show the grid.
+ */
 void job_load_items(void)
 {
 	if (jf_load_items() < 0) {
@@ -178,6 +199,10 @@ void job_load_items(void)
 
 static char g_jump_letter;
 
+/*
+ * Job: jump to the page starting with the chosen letter, then reload
+ * artwork.
+ */
 static void job_jump(void)
 {
 	if (jf_jump_to_letter(g_jump_letter) < 0) {
@@ -216,6 +241,10 @@ static void job_episodes(void)
 	app_goto(SCR_TRACKS);
 }
 
+/*
+ * Job: open an album or a season: load its tracks or episodes and the
+ * cover, then the list screen.
+ */
 static void job_tracks(void)
 {
 	if (jf_load_tracks(jf_items[g_sel].id, jf_items[g_sel].name,
@@ -235,6 +264,7 @@ static void job_tracks(void)
 	app_goto(SCR_TRACKS);
 }
 
+/* Job: open a film's page: load its detail and its larger poster. */
 static void job_detail(void)
 {
 	if (jf_load_detail(jf_items[g_sel].id) < 0) {
@@ -267,10 +297,15 @@ static void change_tab(int delta)
 {
 	int t = (int)jf_tab + delta;
 
-	/* HOME sits before MOVIES, and after SEARCH when wrapping round. */
-	if (t < 0 || t >= JF_TAB_COUNT) {
+	/* HOME sits before MOVIES; USB after SEARCH (then HOME again). */
+	if (t < 0) {
 		g_focus = FOCUS_TABS;
 		app_run_job(job_load_home, "Loading...");
+		return;
+	}
+	if (t >= JF_TAB_COUNT) {
+		g_focus = FOCUS_TABS;
+		app_goto(SCR_USB);
 		return;
 	}
 
@@ -290,6 +325,7 @@ static void change_tab(int delta)
 	app_run_job(job_load_items, "Loading...");
 }
 
+/* Move a page forward or back (L1/R1) and reload. */
 static void page(int delta)
 {
 	int next = jf_start_index + delta * JF_PAGE;
@@ -302,6 +338,11 @@ static void page(int delta)
 	app_run_job(job_load_items, "Loading...");
 }
 
+/*
+ * The poster grid: d-pad moves, Up from the top row goes to the tabs, Left
+ * from the first column to the letter rail, X opens, Circle goes up a
+ * level (or back to the users at the top).
+ */
 static void grid_input(u32 p)
 {
 	int row = g_sel / COLS, col = g_sel % COLS;
@@ -384,6 +425,10 @@ static void grid_input(u32 p)
 	}
 }
 
+/*
+ * The tab row: Left/Right change tab (HOME before MOVIES), Down or X back
+ * to the grid.
+ */
 static void tabs_input(u32 p)
 {
 	if (p & PAD_LEFT)  { change_tab(-1); return; }
@@ -393,6 +438,10 @@ static void tabs_input(u32 p)
 	if (p & PAD_CIRCLE)             g_focus = FOCUS_GRID;
 }
 
+/*
+ * The A-Z rail: Up/Down choose a letter, X jumps to it, Right or Circle
+ * back to the grid.
+ */
 static void rail_input(u32 p)
 {
 	if (p & PAD_UP)    { if (g_letter > 0)  g_letter--; return; }
@@ -407,6 +456,10 @@ static void rail_input(u32 p)
 	}
 }
 
+/*
+ * Per-frame input: L1/R1 page from anywhere, then whichever part has the
+ * focus.
+ */
 static void input(u32 p)
 {
 	/* Paging works from any focus. */
@@ -425,25 +478,28 @@ static void input(u32 p)
 /* ------------------------------------------------------------------ */
 
 /*
- * The tab row, shared with HOME: HOME first, then the library tabs. on is
- * the lit tab (-1 for HOME), focused whether the d-pad is on the row.
+ * The tab row, shared with HOME and USB: HOME first, then the library
+ * tabs, then USB. on is the lit tab (-1 for HOME, SCR_TAB_USB for USB),
+ * focused whether the d-pad is on the row.
  */
 void scr_draw_tabs(int on, int focused)
 {
 	const float gap = 26.0f;
-	const char *names[JF_TAB_COUNT + 1];
+	enum { N = JF_TAB_COUNT + 2 };     /* HOME, the library tabs, USB */
+	const char *names[N];
 
 	names[0] = "HOME";
 	for (int i = 0; i < JF_TAB_COUNT; i++)
 		names[i + 1] = TAB_NAMES[i];
+	names[N - 1] = "USB";
 
 	float total = 0.0f;
-	for (int i = 0; i <= JF_TAB_COUNT; i++)
-		total += ui_text_w(1.0f, names[i]) + (i < JF_TAB_COUNT ? gap : 0);
+	for (int i = 0; i < N; i++)
+		total += ui_text_w(1.0f, names[i]) + (i < N - 1 ? gap : 0);
 
 	float x = (SCR_W - total) * 0.5f;
 
-	for (int i = 0; i <= JF_TAB_COUNT; i++) {
+	for (int i = 0; i < N; i++) {
 		float w   = ui_text_w(1.0f, names[i]);
 		int   lit = (i == on + 1);
 
@@ -463,11 +519,13 @@ void scr_draw_tabs(int on, int focused)
 	ui_box(60, 88, SCR_W - 120, 1, C_RULE);
 }
 
+/* The tab row, with the current tab lit. */
 static void draw_tabs(void)
 {
 	scr_draw_tabs((int)jf_tab, g_focus == FOCUS_TABS);
 }
 
+/* The A-Z letter rail on the left, where a jump makes sense. */
 static void draw_rail(void)
 {
 	/* Not inside one artist: too few albums for it to earn the space, and
@@ -620,6 +678,10 @@ static void draw_slot(int slot, float x, float y, const char *title,
 		          selected ? C_WHITE : C_DIM, line);
 }
 
+/*
+ * The library screen: brand, breadcrumb, tabs, rail, the 3x2 poster grid
+ * with titles, the page count and the button hints.
+ */
 static void draw(void)
 {
 	ui_waves();
@@ -711,6 +773,7 @@ static void draw(void)
 	}
 }
 
+/* Keep the selection inside the current page. */
 static void enter(void)
 {
 	if (g_sel >= jf_item_count)

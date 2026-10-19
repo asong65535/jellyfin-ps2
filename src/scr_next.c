@@ -1,3 +1,8 @@
+/*
+ * The 5-second countdown to the next episode, shown on black after an
+ * episode has truly ended.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "jf.h"
@@ -18,6 +23,7 @@
 
 static clock_t g_start;
 
+/* Whole seconds left in the countdown. */
 static int left(void)
 {
 	clock_t gone = (clock() - g_start) / CLOCKS_PER_SEC;
@@ -26,8 +32,13 @@ static int left(void)
 	return s < 0 ? 0 : s;
 }
 
+/* Start the countdown. */
 static void enter(void) { g_start = clock(); }
 
+/*
+ * X plays the next episode at once, Circle returns to the episode just
+ * watched; at zero it starts by itself.
+ */
 static void input(u32 p)
 {
 	if (p & PAD_CIRCLE) {
@@ -39,10 +50,15 @@ static void input(u32 p)
 		app_run_job(job_play_next, "Loading next episode...");
 }
 
+/*
+ * The countdown on black: 'Next episode', its number and title, and a bar
+ * running down.
+ */
 static void draw(void)
 {
 	/* Black, as the fade left it, with the countdown on top. */
-	ui_box(0, 0, SCR_W, SCR_H, GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
+	ui_box(SCR_LEFT, SCR_TOP, SCR_FULL_W, SCR_FB_H,
+	       GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
 
 	ui_text_c(SCR_W / 2, 120, 1.0f, C_DIM, "Next episode");
 

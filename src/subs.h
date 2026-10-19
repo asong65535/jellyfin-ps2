@@ -1,3 +1,7 @@
+/*
+ * Text subtitles; see subs.c.
+ */
+
 #ifndef SUBS_H
 #define SUBS_H
 
@@ -24,7 +28,6 @@
 int  subs_load(const char *item_id, int index);
 
 void subs_clear(void);
-int  subs_active(void);              /* a track is loaded */
 int  subs_active_for(const char *item_id);   /* ...and it is this film's */
 
 /*

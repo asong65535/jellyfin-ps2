@@ -1,3 +1,8 @@
+/*
+ * Text subtitles: downloaded once per film as SRT, parsed into timed
+ * lines, converted to Latin-1, and looked up by position for drawing.
+ */
+
 #include "subs.h"
 #include "config.h"
 #include "jf.h"
@@ -22,6 +27,7 @@ static int   g_cur;        /* where the last lookup ended: a hint */
 static char  g_item[40];
 static int   g_index = -1;
 
+/* Free the loaded track and forget which one it was. */
 void subs_clear(void)
 {
 	free(g_buf);
@@ -34,8 +40,8 @@ void subs_clear(void)
 	g_index   = -1;
 }
 
-int subs_active(void) { return g_n > 0; }
 
+/* Whether a track is loaded and it belongs to item_id. */
 int subs_active_for(const char *item_id)
 {
 	return g_n > 0 && item_id && strcmp(g_item, item_id) == 0;
@@ -217,6 +223,7 @@ static int clean(char *t, int len)
 	return w;
 }
 
+/* qsort order for cues: by start time. */
 static int by_start(const void *a, const void *b)
 {
 	return ((const Cue *)a)->start - ((const Cue *)b)->start;
@@ -311,6 +318,10 @@ static int parse(int len)
 	return g_n;
 }
 
+/*
+ * Fetch and parse subtitle track index of item_id; see subs.h. A track
+ * already loaded is kept without downloading again.
+ */
 int subs_load(const char *item_id, int index)
 {
 	if (g_n > 0 && g_index == index && strcmp(g_item, item_id) == 0)

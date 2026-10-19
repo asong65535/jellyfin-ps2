@@ -1,4 +1,12 @@
+/*
+ * Artwork. A fixed set of VRAM slots (one page's worth for grids and rows,
+ * one for a film's page), JPEG and PNG decoding into them, and drawing them fitted
+ * to a box. The slots' VRAM is lent to the video texture during playback
+ * and rebuilt after.
+ */
+
 #include "poster.h"
+#include "ui.h"
 
 #include <malloc.h>
 #include <string.h>
@@ -21,11 +29,16 @@ typedef struct {
 	int       max_w, max_h;   /* the allocation, and the sampling stride */
 	int       img_w, img_h;   /* what the decoded image actually fills */
 	int       ready;
+	int       used;           /* given VRAM in the current layout */
 } Slot;
 
-static Slot g_slot[POSTER_SLOTS + 1];
+static Slot g_slot[SLOT_COUNT];
 static int  g_inited;
 
+/*
+ * Reserve a slot's VRAM texture (width rounded up to 64 for the GS) and
+ * its main-memory pixel buffer.
+ */
 static void slot_alloc(GSGLOBAL *gs, Slot *s, int w, int h)
 {
 	/*
@@ -88,6 +101,10 @@ static void slot_alloc(GSGLOBAL *gs, Slot *s, int w, int h)
 static u32 g_vram_mark;
 static int g_mark_set;
 
+/*
+ * Allocate every poster slot once, recording the VRAM mark they start at
+ * so they can be released and rebuilt identically.
+ */
 void poster_init(GSGLOBAL *gs)
 {
 	if (g_inited)
@@ -110,17 +127,33 @@ void poster_init(GSGLOBAL *gs)
 		gs->CurrentPointer = g_vram_mark;
 	}
 
-	for (int i = 0; i < POSTER_SLOTS; i++)
-		slot_alloc(gs, &g_slot[i], POSTER_MAX_W, POSTER_MAX_H);
+	/*
+	 * A page's worth of grid slots - 6, or 10 in the wide layout - and
+	 * the detail slot. Slots beyond the page get no VRAM and are never
+	 * ready: after a switch back from the wide layout their texture
+	 * addresses would point past the new allocation.
+	 */
+	for (int i = 0; i < POSTER_SLOTS_MAX; i++) {
+		g_slot[i].used = (i < POSTER_SLOTS);
+		if (g_slot[i].used)
+			slot_alloc(gs, &g_slot[i], POSTER_MAX_W, POSTER_MAX_H);
+		else
+			g_slot[i].ready = 0;
+	}
 
+	g_slot[DETAIL_SLOT].used = 1;
 	slot_alloc(gs, &g_slot[DETAIL_SLOT], DETAIL_MAX_W, DETAIL_MAX_H);
 
 	g_inited = 1;
 }
 
 /* Which slots held artwork when the VRAM was given up. */
-static int g_was_ready[POSTER_SLOTS + 1];
+static int g_was_ready[SLOT_COUNT];
 
+/*
+ * Give the poster VRAM back (for the video texture), keeping the decoded
+ * pixels in main memory.
+ */
 void poster_release(GSGLOBAL *gs)
 {
 	if (!g_inited)
@@ -131,7 +164,7 @@ void poster_release(GSGLOBAL *gs)
 	 * remember which slots were showing something, and nothing may draw a
 	 * slot until poster_reinit has put it back.
 	 */
-	for (int i = 0; i <= POSTER_SLOTS; i++) {
+	for (int i = 0; i < SLOT_COUNT; i++) {
 		g_was_ready[i]  = g_slot[i].ready;
 		g_slot[i].ready = 0;
 	}
@@ -140,6 +173,10 @@ void poster_release(GSGLOBAL *gs)
 	g_inited = 0;
 }
 
+/*
+ * Rebuild the slots at the recorded mark after video, re-uploading what
+ * they showed.
+ */
 void poster_reinit(GSGLOBAL *gs)
 {
 	/*
@@ -159,8 +196,8 @@ void poster_reinit(GSGLOBAL *gs)
 	 * something forces a refetch, which is not obvious to the person
 	 * looking at it.
 	 */
-	for (int i = 0; i <= POSTER_SLOTS; i++) {
-		if (!g_was_ready[i] || !g_slot[i].pixels)
+	for (int i = 0; i < SLOT_COUNT; i++) {
+		if (!g_was_ready[i] || !g_slot[i].pixels || !g_slot[i].used)
 			continue;
 
 		gsKit_texture_upload(gs, &g_slot[i].tex);
@@ -169,37 +206,73 @@ void poster_reinit(GSGLOBAL *gs)
 	}
 }
 
+/*
+ * After a display mode change: the framebuffers may have a new size, so
+ * the slots start at a new place. Record a new mark there, reserve every
+ * slot again, and upload the artwork they held from main memory.
+ */
+void poster_rebuild(GSGLOBAL *gs)
+{
+	for (int i = 0; i < SLOT_COUNT; i++) {
+		g_was_ready[i] = g_slot[i].ready;
+		g_slot[i].ready = 0;
+	}
+
+	g_mark_set = 0;                    /* a new mark, after the new framebuffers */
+	g_inited   = 0;
+
+	poster_init(gs);
+
+	for (int i = 0; i < SLOT_COUNT; i++) {
+		if (!g_was_ready[i] || !g_slot[i].pixels || !g_slot[i].used)
+			continue;
+
+		gsKit_texture_upload(gs, &g_slot[i].tex);
+		g_slot[i].ready = 1;
+		g_was_ready[i]  = 0;
+	}
+}
+
+/* Mark every slot empty, without freeing anything. */
 void poster_reset(void)
 {
-	for (int i = 0; i <= POSTER_SLOTS; i++)
+	for (int i = 0; i < SLOT_COUNT; i++)
 		g_slot[i].ready = 0;
 }
 
+/* Mark one slot empty. */
 void poster_clear(int slot)
 {
-	if (slot >= 0 && slot <= POSTER_SLOTS)
+	if (slot >= 0 && slot < SLOT_COUNT)
 		g_slot[slot].ready = 0;
 }
 
+/* The decoded image size held in a slot (0 x 0 if none). */
 void poster_dims(int slot, int *w, int *h)
 {
-	if (slot < 0 || slot > POSTER_SLOTS) { *w = 0; *h = 0; return; }
+	if (slot < 0 || slot >= SLOT_COUNT) { *w = 0; *h = 0; return; }
 
 	*w = g_slot[slot].img_w;
 	*h = g_slot[slot].img_h;
 }
 
+/* Whether a slot holds an image that can be drawn. */
 int poster_ready(int slot)
 {
-	if (slot < 0 || slot > POSTER_SLOTS)
+	if (slot < 0 || slot >= SLOT_COUNT || !g_slot[slot].used)
 		return 0;
 	return g_slot[slot].ready;
 }
 
+/*
+ * Decode a JPEG (or PNG) into a slot and upload it to VRAM. 0 on success;
+ * on failure the slot stays empty rather than showing the previous image.
+ */
 int poster_upload(GSGLOBAL *gs, int slot,
                   const unsigned char *data, int len)
 {
-	if (!g_inited || slot < 0 || slot > POSTER_SLOTS || len <= 0)
+	if (!g_inited || slot < 0 || slot >= SLOT_COUNT || !g_slot[slot].used ||
+	    len <= 0)
 		return -1;
 
 	Slot *s = &g_slot[slot];
@@ -291,6 +364,10 @@ int poster_upload(GSGLOBAL *gs, int slot,
 	return 0;
 }
 
+/*
+ * Draw a slot's image fitted into a box, keeping its proportions (posters
+ * are 2:3, album covers square).
+ */
 void poster_draw(GSGLOBAL *gs, int slot, float x, float y, float w, float h)
 {
 	if (!poster_ready(slot))
@@ -317,8 +394,16 @@ void poster_draw(GSGLOBAL *gs, int slot, float x, float y, float w, float h)
 	float dx = x + (w - dw) * 0.5f;
 	float dy = y + (h - dh) * 0.5f;
 
+	/* Layout space to canvas (layout.h), then canvas to framebuffer. */
+	dx = LAY_X(dx);
+	dy = LAY_Y(dy) + SCR_Y0;
+	dw = LAY_W(dw);
+	dh = LAY_H(dh);
+
 	/* Sample only the part of the slot the image fills. The texture keeps
 	 * its full width, which is the stride. */
+	ui_dither(1);                  /* pictures are dithered (16-bit only) */
+
 	gsKit_prim_sprite_texture(gs, &s->tex,
 	                          dx, dy,
 	                          0.0f, 0.0f,
@@ -326,4 +411,6 @@ void poster_draw(GSGLOBAL *gs, int slot, float x, float y, float w, float h)
 	                          (float)s->img_w, (float)s->img_h,
 	                          3,
 	                          GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0));
+
+	ui_dither(0);
 }

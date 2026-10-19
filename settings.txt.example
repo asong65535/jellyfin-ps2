@@ -14,7 +14,7 @@ network=dhcp
 #   mask=255.255.255.0
 #   gateway=192.168.50.1
 
-# Video output: 480i or 480p (480p is not used yet)
+# Video output: 480i, 480p, 240p or 1080i (480p/1080i need component)
 video=480i
 
 # Signed-in users are added below by the app (user=...).

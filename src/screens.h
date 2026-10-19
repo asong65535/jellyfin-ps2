@@ -1,3 +1,7 @@
+/*
+ * Every screen, and the functions screens share with each other.
+ */
+
 #ifndef SCREENS_H
 #define SCREENS_H
 
@@ -14,9 +18,9 @@ extern const Screen scr_detail;
 extern const Screen scr_tracks;
 extern const Screen scr_player;
 extern const Screen scr_video;
+extern const Screen scr_usb;
 
 /* Which track scr_tracks has highlighted, and how the player is opened. */
-int  scr_tracks_selected(void);
 
 /* Put the list and its synopsis panel back to the top, for a new album or
  * season. */
@@ -31,16 +35,6 @@ void scr_detail_reset(void);
  * An empty id plays mass:/test.bin instead, which keeps the decoder
  * testable with the network out of the picture.
  */
-void scr_video_open(const char *item_id);
-
-/*
- * The same, with chosen audio and subtitle streams.
- *
- * Both are stream indices as ffmpeg numbers them; -1 leaves audio to
- * Jellyfin and means no subtitles. Chosen on the detail page, because
- * changing either mid-film would need a fresh transcode.
- */
-void scr_video_open_tracks(const char *item_id, int audio_index, int sub_index);
 
 /* The same, starting at start_ticks (100 ns) instead of the beginning. */
 void scr_video_open_at(const char *item_id, int audio_index, int sub_index,
@@ -55,8 +49,6 @@ void scr_video_open_at(const char *item_id, int audio_index, int sub_index,
  */
 int scr_video_audio_read(void *buf, int len);
 int scr_video_audio_avail(void);
-int scr_video_audio_pts(void);
-int scr_video_video_pts(void);
 
 /*
  * The PTS (90 kHz) of the first audio byte in the ring, or -1 before any.
@@ -109,5 +101,8 @@ extern int g_from_home;
  * on = lit tab (-1 HOME), focused = the d-pad is on it. */
 int  scr_load_poster(int slot, const char *id, int max_width);
 void scr_draw_tabs(int on, int focused);
+
+/* The lit-tab value for the USB tab, after the library tabs. */
+#define SCR_TAB_USB JF_TAB_COUNT
 
 #endif

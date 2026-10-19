@@ -1,3 +1,8 @@
+/*
+ * The search screen: a query on the on-screen keyboard, searched within
+ * the current tab.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "osk.h"
@@ -18,6 +23,7 @@ static void enter(void)
 	osk_bind(jf_query, sizeof(jf_query));
 }
 
+/* Search the current query in the Search tab. */
 static void run_search(void)
 {
 	jf_tab         = JF_TAB_SEARCH;
@@ -25,6 +31,7 @@ static void run_search(void)
 	app_run_job(job_load_items, "Searching...");
 }
 
+/* The keyboard edits the query; START searches; Circle goes back. */
 static void input(u32 p)
 {
 	if (osk_input(p) || (p & PAD_START)) {
@@ -37,6 +44,7 @@ static void input(u32 p)
 		app_goto(SCR_BROWSE);
 }
 
+/* The search screen: what is searched, the query field and the keyboard. */
 static void draw(void)
 {
 	ui_waves();

@@ -1,5 +1,12 @@
-#include "freeze.h"
+/*
+ * Music playback. Two threads: a network reader filling a ring buffer with
+ * the MP3 stream, and a worker decoding it with libmad and feeding audsrv
+ * (the IOP sound driver). The screen thread only sets commands (play,
+ * pause, stop); the worker alone calls audsrv.
+ */
+
 #include "audio.h"
+#include "freeze.h"
 #include "config.h"
 #include "net.h"
 
@@ -159,12 +166,20 @@ static u8 g_ring[AUDIO_RING] __attribute__((aligned(64)));
 static u8  g_read_stack[32 * 1024] __attribute__((aligned(16)));
 static int g_read_thread = -1;
 
+/*
+ * Bytes waiting in the music ring (written by the reader thread, read by
+ * the worker).
+ */
 static int ring_used(void)
 {
 	int h = g_head, t = g_tail;
 	return (h >= t) ? (h - t) : (AUDIO_RING - t + h);
 }
 
+/*
+ * Room left in the music ring; one byte is kept free so full and empty
+ * differ.
+ */
 static int ring_free(void)
 {
 	return AUDIO_RING - 1 - ring_used();
@@ -328,6 +343,12 @@ static struct mad_stream g_stream;
 static struct mad_frame  g_frame;
 static struct mad_synth  g_synth;
 
+/*
+ * The music worker's main job, one track: wait for the reader to buffer,
+ * decode MP3 frames with libmad, convert to 16-bit PCM, and feed audsrv
+ * until the track ends or a stop is asked. Runs on the music worker
+ * thread; the only code that calls audsrv for music.
+ */
 static void stream_one(void)
 {
 
@@ -736,6 +757,11 @@ int audio_init(void)
 	return 0;
 }
 
+/*
+ * Start a track from host:port/path: (re)start sound if needed, then hand
+ * the request to the worker (signalled through its semaphore) and the
+ * reader. Returns at once; the state goes Buffering then Playing.
+ */
 void audio_play(const char *host, int port, const char *path,
                 const char *token)
 {
@@ -781,9 +807,19 @@ void audio_play(const char *host, int port, const char *path,
 		SignalSema(g_wake);
 }
 
+/*
+ * Pause the track: the worker stops feeding audsrv, nothing else changes.
+ */
 void audio_pause(void)  { g_paused = 1; }
+
+/* Resume a paused track. */
 void audio_resume(void) { g_paused = 0; }
 
+/*
+ * Ask the worker to stop the current track. Only sets the command: audsrv
+ * is never called from the screen thread, since its client is not thread-
+ * safe.
+ */
 void audio_stop(void)
 {
 	if (g_cmd != CMD_PLAY) {
@@ -814,17 +850,30 @@ void audio_stop(void)
 	g_state = (g_state == AUDIO_ERROR) ? AUDIO_ERROR : AUDIO_STOPPED;
 }
 
+/* Stopped, Buffering, Playing, Paused or Error, for the player screen. */
 AudioState audio_state(void) { return (AudioState)g_state; }
 
+/*
+ * One line on what the music worker is doing, for development builds
+ * (DEBUG_UI): init state, loop count, command, step, bytes received,
+ * frames, rate and decoder errors.
+ */
 const char *audio_debug(void)
 {
-	static char buf[64];
+	static char buf[128];
 
-	snprintf(buf, sizeof(buf), "init %d lp %d cmd %d step %d rx %dK fr %d hz %d",
-	         g_init_ok, g_loops, g_cmd, g_step, g_rx >> 10, g_frames, g_hz);
+	snprintf(buf, sizeof(buf),
+	         "init %d lp %d cmd %d step %d rx %dK fr %d hz %d "
+	         "err %d/%d last %d drop %d",
+	         g_init_ok, g_loops, g_cmd, g_step, g_rx >> 10, g_frames, g_hz,
+	         g_err_sync, g_err_real, g_last_err, g_dropped);
 	return buf;
 }
 
+/*
+ * Seconds played in the current track, from PCM bytes handed to the sound
+ * chip.
+ */
 int audio_position(void)
 {
 	/*
@@ -836,9 +885,9 @@ int audio_position(void)
 	return per_sec > 0 ? g_bytes / per_sec : 0;
 }
 
-int audio_bytes(void)  { return g_bytes; }
 
 
+/* True between a track ending by itself and the next one starting. */
 int audio_ended(void)
 {
 	/*
@@ -848,14 +897,9 @@ int audio_ended(void)
 	 */
 	return g_ended;
 }
-int audio_frames(void) { return g_frames; }
-int audio_errors(void)  { return g_errors; }
-int audio_dropped(void)  { return g_dropped; }
 
-int audio_err_sync(void) { return g_err_sync; }
-int audio_err_real(void) { return g_err_real; }
-int audio_last_err(void) { return g_last_err; }
 
+/* PCM bytes per second the current track needs (rate x channels x 2). */
 int audio_rate_needed(void)
 {
 	if (g_hz <= 0)
@@ -864,10 +908,5 @@ int audio_rate_needed(void)
 	return g_hz * g_ch * 2;
 }
 
-void audio_format(int *hz, int *channels)
-{
-	if (hz)       *hz       = g_hz;
-	if (channels) *channels = g_ch;
-}
-
+/* The last music error text, or ''. */
 const char *audio_error(void) { return g_err; }

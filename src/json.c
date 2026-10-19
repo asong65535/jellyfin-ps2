@@ -32,6 +32,12 @@ static int g_fail_pos;
  * says whether a hole lands on a read boundary. */
 int json_fail_pos(void) { return g_fail_pos; }
 
+/*
+ * Tokenise a JSON reply with jsmn into the module's token table. Returns
+ * the number of tokens, or a negative jsmn error (too many tokens, or a
+ * truncated reply). The body is not copied: tokens point into it, so it
+ * must stay valid while the tokens are used.
+ */
 int json_parse(char *body)
 {
 	jsmn_parser p;
@@ -52,9 +58,14 @@ int json_parse(char *body)
 	return g_count;
 }
 
+/*
+ * Children of token i: elements for an array, key/value PAIRS for an
+ * object.
+ */
 int json_size(int i)      { return (i >= 0 && i < g_count) ? g_tok[i].size : 0; }
+
+/* Whether token i is an array. */
 int json_is_array(int i)  { return (i >= 0 && i < g_count) && g_tok[i].type == JSMN_ARRAY; }
-int json_is_object(int i) { return (i >= 0 && i < g_count) && g_tok[i].type == JSMN_OBJECT; }
 
 /*
  * Step past every child, recursively. A leaf has size 0, never enters the
@@ -72,6 +83,7 @@ int json_skip(int i)
 	return j;
 }
 
+/* Whether token i is the string s, exactly. */
 static int tok_eq(int i, const char *s)
 {
 	int n = g_tok[i].end - g_tok[i].start;
@@ -80,6 +92,10 @@ static int tok_eq(int i, const char *s)
 	       strncmp(g_js + g_tok[i].start, s, n) == 0;
 }
 
+/*
+ * The value token for key in object obj, or -1. Walks the object's pairs
+ * with json_skip, so nested values are stepped over correctly.
+ */
 int json_get(int obj, const char *key)
 {
 	if (obj < 0 || obj >= g_count || g_tok[obj].type != JSMN_OBJECT)
@@ -94,17 +110,6 @@ int json_get(int obj, const char *key)
 	}
 	return -1;
 }
-
-#if FOLD_LATIN1
-/* Latin-1 letters folded to base form, for fonts without accents. */
-static char fold_latin1(unsigned int cp)
-{
-	static const char t[] =
-		"AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPs"
-		"aaaaaaaceeeeiiiidnooooo/ouuuuypy";
-	return t[cp - 0xC0];
-}
-#endif
 
 /*
  * .NET escapes non-ASCII by default, so "Les Nouveaux Heros" arrives as
@@ -142,9 +147,6 @@ void json_str(int tok, char *out, int max)
 			}
 			si += 5;
 
-#if FOLD_LATIN1
-			if (cp >= 0xC0 && cp <= 0xFF) { out[o++] = fold_latin1(cp); break; }
-#endif
 			/* Latin-1, which the font draws: see text.h. */
 			if (o + 3 >= max) { si = se; break; }
 			o += text_put_cp(cp, out + o);
@@ -160,6 +162,10 @@ void json_str(int tok, char *out, int max)
 	out[o] = '\0';
 }
 
+/*
+ * A decimal number token as thousandths (23.976 -> 23976), parsed by hand;
+ * see the comment inside.
+ */
 int json_milli(int tok)
 {
 	/*
@@ -198,6 +204,7 @@ int json_milli(int tok)
 	return neg ? -v : v;
 }
 
+/* A number token as an int; 'null' and missing values give 0. */
 int json_int(int tok)
 {
 	if (tok < 0 || tok >= g_count) return 0;

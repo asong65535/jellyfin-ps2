@@ -1,3 +1,7 @@
+/*
+ * The transport stream demuxer; see ts.c.
+ */
+
 #ifndef TS_H
 #define TS_H
 
@@ -55,22 +59,6 @@ typedef struct {
 
 /* Start, or start again for a new stream. */
 void ts_init(TsDemux *d, int pid);
-
-/*
- * Feed bytes in, take elementary stream out.
- *
- * Writes at most out_max bytes and returns how many.
- *
- * out_max MUST be at least in_len. Everything not written when the output
- * fills is discarded, because the caller reads afresh next time - and a
- * stream missing a large part of itself decodes into macroblock rubbish
- * rather than failing outright, so the mistake is not obvious.
- *
- * An equal-sized buffer is always enough: 188 bytes in yields at most 184
- * out, so the output can never fill before the input runs out.
- */
-int  ts_feed(TsDemux *d, const unsigned char *in, int in_len,
-             unsigned char *out, int out_max);
 
 /*
  * Both streams in one pass.

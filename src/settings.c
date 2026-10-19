@@ -1,3 +1,9 @@
+/*
+ * settings.txt beside the ELF: reading it (server, network, video, signed-
+ * in users) and saving changes safely on the PS2's USB driver - update in
+ * place, a settings.bak backup, and a read-back check.
+ */
+
 #include "settings.h"
 #include "config.h"
 #include "net.h"       /* net_snooze, to let writes land */
@@ -19,10 +25,19 @@ static int  g_found;
 static int  g_ip_from_file;   /* a valid ip= line was read */
 static char g_notice[320];
 
+/* Where settings.txt is (beside the ELF). */
 const char *settings_path(void)   { return g_path; }
+
+/* Whether settings.txt existed at start-up (or has been written since). */
 int         settings_found(void)  { return g_found; }
+
+/*
+ * The first problem found in settings.txt, or a failed save, for the
+ * connect screen.
+ */
 const char *settings_notice(void) { return g_notice; }
 
+/* Keep the first problem only: later ones would hide it. */
 static void note(const char *fmt, const char *a)
 {
 	if (g_notice[0])
@@ -57,6 +72,7 @@ static void beside_elf(char *out, int max, int argc, char **argv,
 	strncat(out, name, max - strlen(out) - 1);
 }
 
+/* Strip spaces and line ends from both ends, in place. */
 static char *trim(char *s)
 {
 	while (*s == ' ' || *s == '\t')
@@ -70,6 +86,7 @@ static char *trim(char *s)
 	return s;
 }
 
+/* Case-insensitive comparison of a key with a lower-case name. */
 static int key_is(const char *k, const char *want)
 {
 	for (; *k && *want; k++, want++)
@@ -106,6 +123,7 @@ static int is_ip(const char *s)
 	return parts == 4;
 }
 
+/* Every setting at its default, before the file is read. */
 static void defaults(void)
 {
 	memset(&settings, 0, sizeof(settings));
@@ -119,6 +137,10 @@ static void defaults(void)
 	settings.end_early_ms  = VIDEO_END_EARLY_MS;
 }
 
+/*
+ * Apply one key=value line: validate it, store it, or note the line number
+ * of a bad value. Unknown keys are ignored.
+ */
 static void apply(const char *key, char *val, int lineno)
 {
 	char where[24];
@@ -170,9 +192,12 @@ static void apply(const char *key, char *val, int lineno)
 		for (char *p = val; *p; p++)
 			*p = tolower((unsigned char)*p);
 
-		if      (strcmp(val, "480i") == 0) settings.video_480p = 0;
-		else if (strcmp(val, "480p") == 0) settings.video_480p = 1;
-		else note("settings.txt: video= must be 480i or 480p (%s)", where);
+		if      (strcmp(val, "480i") == 0) settings.video_mode = VIDEO_480I;
+		else if (strcmp(val, "480p") == 0) settings.video_mode = VIDEO_480P;
+		else if (strcmp(val, "240p") == 0) settings.video_mode = VIDEO_240P;
+		else if (strcmp(val, "1080i") == 0) settings.video_mode = VIDEO_1080I;
+		else note("settings.txt: video= must be 480i, 480p, 240p or 1080i (%s)",
+		          where);
 		return;
 	}
 
@@ -230,6 +255,11 @@ static void apply(const char *key, char *val, int lineno)
 	/* Unknown keys are ignored, so newer files work with older builds. */
 }
 
+/*
+ * Read settings.txt beside the ELF into 'settings', restoring it from
+ * settings.bak if it is empty. Called before the IOP reset, while the
+ * launcher's USB driver still works.
+ */
 void settings_load(int argc, char **argv)
 {
 	defaults();
@@ -418,6 +448,10 @@ static int read_file(const char *path, char *buf, int max)
 	return n;
 }
 
+/*
+ * Flush and close a file, then wait for the USB FAT driver to actually
+ * write it.
+ */
 static void settle(FILE *f)
 {
 	fflush(f);
@@ -433,6 +467,11 @@ static int file_length(const char *path)
 	return read_file(path, tmp, sizeof(tmp));
 }
 
+/*
+ * Write data to path: update an existing file in place (padding with blank
+ * lines if shorter), or create a new one. Never truncates or deletes; see
+ * the comment above.
+ */
 static int write_once(const char *path, const char *data, int len)
 {
 	int   old = file_length(path);          /* -1: no such file */
@@ -451,6 +490,10 @@ static int write_once(const char *path, const char *data, int len)
 	return w == len ? 0 : -1;
 }
 
+/*
+ * write_once, then read back and compare; once more if it did not stick. 0
+ * on success, else a notice.
+ */
 static int write_file(const char *path, const char *data, int len)
 {
 	static char check[8192];
@@ -479,6 +522,10 @@ static int write_file(const char *path, const char *data, int len)
 	return -1;
 }
 
+/*
+ * Rewrite settings.txt with one line changed, added or removed, every
+ * other line kept; the previous version goes to settings.bak first.
+ */
 static int rewrite(const char *key, const char *who, const char *line)
 {
 	static char old[8192];
@@ -597,6 +644,7 @@ static int rewrite(const char *key, const char *who, const char *line)
 	return 0;
 }
 
+/* Save server= if it changed. */
 int settings_save_server(const char *server)
 {
 	const char *v = server;
@@ -619,6 +667,7 @@ int settings_save_server(const char *server)
 	return 0;
 }
 
+/* The saved sign-in of a user, by name, or NULL. */
 const SavedUser *settings_user(const char *name)
 {
 	for (int i = 0; i < settings.user_count; i++)
@@ -628,6 +677,7 @@ const SavedUser *settings_user(const char *name)
 	return NULL;
 }
 
+/* Add or replace a user= line, in the file and in memory. */
 int settings_save_user(const SavedUser *u)
 {
 	char line[300];
@@ -652,6 +702,7 @@ int settings_save_user(const SavedUser *u)
 	return 0;
 }
 
+/* Remove a user= line, in the file and in memory. */
 int settings_remove_user(const char *name)
 {
 	int rc = rewrite("user", name, NULL);

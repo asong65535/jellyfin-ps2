@@ -1,3 +1,7 @@
+/*
+ * The MPEG-2 decoder and picture presentation; see video.c.
+ */
+
 #ifndef VIDEO_H
 #define VIDEO_H
 
@@ -172,5 +176,13 @@ void video_hold(void);
 
 /* The freeze safety net set the decoder aside: replace it at video_end. */
 void video_mark_stuck(void);
+
+/*
+ * The picture size the coming stream will deliver (the size asked of the
+ * transcoder), so the texture can be reserved at that size rather than
+ * the largest supported. 0, 0 for unknown: the largest is reserved.
+ * Call before video_begin.
+ */
+void video_expect_size(int w, int h);
 
 #endif

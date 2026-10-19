@@ -1,3 +1,7 @@
+/*
+ * Colours, screen size and drawing helpers; see ui.c.
+ */
+
 #ifndef UI_H
 #define UI_H
 
@@ -27,6 +31,25 @@ GSGLOBAL *ui_gs(void);
 
 void ui_init_video(void);
 void ui_init_font(void);
+
+/* Switch the screen to display profile id (display.h), from a menu or
+ * start-up only. */
+void ui_set_display(int id);
+
+/* A box shaded between two colours, left-right or top-bottom. */
+void ui_gradient(float x, float y, float w, float h, u64 l, u64 r, int vertical);
+
+/* Dithering on or off for what is drawn next (16-bit modes only). */
+void ui_dither(int on);
+
+/* The display geometry test pattern over the whole picture (DEBUG_UI). */
+void ui_geometry_pattern(void);
+
+/* Full-screen colour ramps for judging 16-bit banding (test builds). */
+void ui_color_ramps(void);
+
+/* After a display mode change: font, logo and artwork back in VRAM. */
+void ui_rebuild_video_memory(void);
 
 void ui_boot(const char *msg);      /* diagnostic: clear, one line, flip */
 void ui_splash(void);               /* brand and waves, nothing else */

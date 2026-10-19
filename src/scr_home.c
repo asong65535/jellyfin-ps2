@@ -1,3 +1,8 @@
+/*
+ * HOME: Continue Watching and Next Up, two scrolling rows of posters with
+ * a description panel. The first screen after signing in.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "jf.h"
@@ -10,13 +15,14 @@
 /*
  * HOME: Continue Watching and Next Up, the first thing after signing in.
  *
- * Two rows of three posters. Each row owns three of the six poster slots,
- * as a ring: a poster lives in slot (row * 3 + index % 3), so scrolling a
+ * Two rows of VIS posters (3, or 5 in the wide layout). Each row owns VIS
+ * of the poster slots, as a ring: a poster lives in slot
+ * (row * VIS + index % VIS), so scrolling a
  * row by one brings exactly one new poster into view, and only that one is
  * fetched, into the slot of the poster that scrolled out.
  */
 
-#define VIS      3
+#define VIS      (lay->home_visible)   /* posters per row, from the layout */
 #define PW       72.0f
 #define PH       108.0f
 #define PGAP     16.0f
@@ -30,7 +36,7 @@ static int  g_row;                   /* the row the cursor is in */
 static int  g_sel[2];                /* selected item in each row */
 static int  g_first[2];              /* first visible item in each row */
 static int  g_tabs;                  /* the d-pad is on the tab row */
-static char g_slot_id[POSTER_SLOTS][40];   /* which poster each slot holds */
+static char g_slot_id[POSTER_SLOTS_MAX][40];   /* which poster each slot holds */
 
 /*
  * A poster scrolled into view, fetched on the next frame rather than at
@@ -47,11 +53,16 @@ static int count(int row)
 	return row == ROW_CW ? jf_home_cw_count : jf_home_nu_count;
 }
 
+/* Item i of a row. */
 static JfHomeItem *item(int row, int i)
 {
 	return row == ROW_CW ? &jf_home_cw[i] : &jf_home_nu[i];
 }
 
+/*
+ * The poster slot of item i in a row: each row cycles through its own
+ * VIS slots.
+ */
 static int slot_of(int row, int i) { return row * VIS + i % VIS; }
 
 /* The poster for item i of row, if its slot does not hold it already. */
@@ -68,6 +79,10 @@ static void ensure_poster(int row, int i)
 	snprintf(g_slot_id[s], sizeof(g_slot_id[s]), "%s", h->image_id);
 }
 
+/*
+ * Job: wait for pending reports, load both rows, fetch the visible
+ * posters, and show HOME.
+ */
 void job_load_home(void)
 {
 	/*
@@ -116,6 +131,7 @@ void job_load_home(void)
 	app_goto(SCR_HOME);
 }
 
+/* Job: open the selected item's page (from HOME, so Back returns here). */
 static void job_open(void)
 {
 	JfHomeItem *h = item(g_row, g_sel[g_row]);
@@ -134,8 +150,13 @@ static void job_open(void)
 	app_goto(SCR_DETAIL);
 }
 
+/* Nothing to prepare: job_load_home does it. */
 static void enter(void) { }
 
+/*
+ * Move within a row; if the selection scrolls out of view, schedule the
+ * new poster for the next frame.
+ */
 static void move(int row, int delta)
 {
 	int n = count(row);
@@ -158,6 +179,11 @@ static void move(int row, int delta)
 	g_pend_i   = s;
 }
 
+/*
+ * Fetch a poster scrolled into view last frame, then: Left/Right within a
+ * row, Up/Down between rows and the tabs, X opens, Circle back to the
+ * users.
+ */
 static void input(u32 p)
 {
 	/* The poster that scrolled into view last frame. */
@@ -179,12 +205,7 @@ static void input(u32 p)
 			return;
 		}
 		if (p & PAD_LEFT) {
-			jf_tab = JF_TAB_SEARCH;
-			jf_start_index = 0;
-			if (jf_query[0])
-				app_run_job(job_load_items, "Loading...");
-			else
-				app_goto(SCR_SEARCH);
+			app_goto(SCR_USB);         /* the last tab, wrapping round */
 			return;
 		}
 		if ((p & (PAD_DOWN | PAD_CROSS)) && (jf_home_cw_count || jf_home_nu_count)) {
@@ -222,6 +243,10 @@ static void clock_text(char *out, int max, long long ticks)
 		snprintf(out, max, "%d:%02d", s / 60, s % 60);
 }
 
+/*
+ * One row: its label, up to VIS posters with progress bars, the scroll
+ * arrows, or the empty message.
+ */
 static void draw_row(int row, float y, const char *label, const char *empty)
 {
 	ui_text(ROW_X, y, 1.0f, C_WHITE, label);
@@ -326,6 +351,10 @@ static void draw_info(void)
 	}
 }
 
+/*
+ * HOME: brand, user name, tabs, both rows and the panel describing the
+ * selected item.
+ */
 static void draw(void)
 {
 	ui_waves();

@@ -1,3 +1,7 @@
+/*
+ * A video's sound and the playback clock; see vaudio.c.
+ */
+
 #ifndef VAUDIO_H
 #define VAUDIO_H
 
@@ -46,13 +50,9 @@ int  vaudio_clock90(long long *pts90);
  */
 void vaudio_pause(int on);
 
-/* Milliseconds of real sound played. Kept for the readout. */
-int  vaudio_played_ms(void);
-
 /* Diagnostics: frames decoded, silence chunks padded in, and errors. */
 int         vaudio_frames(void);
 int         vaudio_underruns(void);
-const char *vaudio_error(void);
 
 /*
  * Where the worker is, for the on-screen readout:
@@ -65,6 +65,9 @@ const char *vaudio_debug(void);
 
 /* 1 while the thread's stack has never overflowed. */
 int vaudio_stack_ok(void);
-int vaudio_loops(void);      /* worker passes, for diagnostics */
+
+/* Samples skipped to meet the first picture, negative for silence added
+ * before a late-starting sound. For the DEBUG_UI readout. */
+long long vaudio_skip(void);
 
 #endif

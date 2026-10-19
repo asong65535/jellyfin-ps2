@@ -1,5 +1,12 @@
-#include "freeze.h"
+/*
+ * The MPEG-2 video decoder: a thread running libmpeg on the IPU, fed 2 KB
+ * at a time from the stream, one picture decoded ahead; the screen thread
+ * scatters each picture into a texture and draws it. Also the end-of-
+ * stream watchdog.
+ */
+
 #include "video.h"
+#include "freeze.h"
 #include "poster.h"
 #include "config.h"
 #include "net.h"        /* net_snooze, for the bounded wait when stopping */
@@ -91,6 +98,10 @@ static int g_reset_tries;
  */
 static void ipu_reset_once(void);
 
+/*
+ * Reset the IPU (the MPEG decoder hardware) until it reports idle, up to 8
+ * tries.
+ */
 static void ipu_reset(void)
 {
 	for (g_reset_tries = 1; g_reset_tries <= 8; g_reset_tries++) {
@@ -101,6 +112,11 @@ static void ipu_reset(void)
 	}
 }
 
+/*
+ * One reset: stop the DMA channel feeding the IPU, let it drain, stop the
+ * one reading from it, then reset the IPU with every DMA channel briefly
+ * held so nothing moves meanwhile.
+ */
 static void ipu_reset_once(void)
 {
 	int spins;
@@ -204,12 +220,14 @@ static char g_stack[32 * 1024] __attribute__((aligned(16)));   /* was 16 KB */
  */
 #define STACK_GUARD 1024
 
+/* Fill the bottom of the decoder thread's stack with a known pattern. */
 static void stack_guard_fill(char *stk)
 {
 	for (int i = 0; i < STACK_GUARD; i++)
 		stk[i] = (char)0xA5;
 }
 
+/* Whether that pattern is intact (1) or the stack overran into it (0). */
 static int stack_guard_ok(const char *stk)
 {
 	for (int i = 0; i < STACK_GUARD; i++)
@@ -219,6 +237,7 @@ static int stack_guard_ok(const char *stk)
 	return 1;
 }
 
+/* The decoder thread's stack guard, for the DEBUG_UI readout. */
 int video_stack_ok(void) { return stack_guard_ok(g_stack); }
 
 static volatile int g_want;      /* UI: decode another picture */
@@ -316,15 +335,47 @@ static int g_lost;
 /* The texture is still allocated after video_end_keep. */
 static int g_tex_held;
 
+/*
+ * The texture's size, chosen per stream (video_expect_size): the picture
+ * the transcode will deliver, in whole macroblocks plus one row of margin,
+ * rather than always the largest supported. A 16:9 film at 512x288 then
+ * takes about 0.6 MB of VRAM instead of 1.2. g_alloc_* is what was
+ * reserved; init_cb refuses a picture larger than that.
+ */
+static int g_exp_w, g_exp_h;
+static int g_alloc_w = VIDEO_MAX_W, g_alloc_h = VIDEO_MAX_H;
+
+void video_expect_size(int w, int h)
+{
+	g_exp_w = w;
+	g_exp_h = h;
+}
+
 /* video_end without giving the VRAM back. */
 static int g_keep_on_end;
 
+/* The last decoder error text, or ''. */
 const char *video_error(void)   { return g_err; }
+
+/* A short description of the stream (size, rate), for the readout. */
 const char *video_info(void)    { return g_info; }
+
+/* Milliseconds per picture, from the stream's frame rate. */
 int  video_ms_per_frame(void)   { return g_ms_frame; }
+
+/*
+ * The picture's width: the visible (cropped) width if known, else the
+ * coded one.
+ */
 int  video_width(void)          { return g_crop_w ? g_crop_w : g_img_w; }
+
+/* The picture's height, likewise. */
 int  video_height(void)         { return g_crop_h ? g_crop_h : g_img_h; }
 
+/*
+ * The visible picture size, when smaller than the coded one; see the
+ * comment inside.
+ */
 void video_set_crop(int w, int h)
 {
 	/*
@@ -339,14 +390,31 @@ void video_set_crop(int w, int h)
 	g_crop_h = (h > 0 && h <= VIDEO_MAX_H) ? h : 0;
 }
 
+/*
+ * Where the decoder reads compressed video from (read_stream for the
+ * network).
+ */
 void video_set_source(int (*cb)(void *, int)) { g_read = cb; }
+
+/*
+ * Where the decoder gets each picture's timestamp (take_pts in
+ * scr_video.c).
+ */
 void video_set_pts_source(long long (*cb)(void)) { g_pts_cb = cb; }
 
+/*
+ * The picture duration in 90 kHz ticks (3754 at 23.976 fps), for
+ * timestamping pictures that carry none.
+ */
 void video_set_frame90(int ticks)
 {
 	g_frame90 = (ticks >= 900 && ticks <= 9000) ? ticks : 3003;
 }
 
+/*
+ * The readout line about the decoder (DEBUG_UI): busy, pictures started,
+ * end, the end-of-stream data counters.
+ */
 const char *video_debug(void)
 {
 	/*
@@ -362,6 +430,12 @@ const char *video_debug(void)
 	return buf;
 }
 
+/*
+ * libmpeg's data callback, called on the decoder thread whenever the IPU
+ * needs more bytes: fill the 2 KB feed buffer from the source (zero-
+ * padding the last, short block), flush it from the cache, and hand it
+ * over. Returns the bytes, 0 at the end.
+ */
 static int data_cb(void *unused)
 {
 	(void)unused;
@@ -491,11 +565,11 @@ static void *init_cb(void *param, MPEGSequenceInfo *info)
 		return g_pic;
 	}
 
-	if (info->m_Width > VIDEO_MAX_W || info->m_Height > VIDEO_MAX_H) {
+	if (info->m_Width > g_alloc_w || info->m_Height > g_alloc_h) {
 		snprintf(g_err, sizeof(g_err),
 		         "Picture is %dx%d, larger than %dx%d",
 		         info->m_Width, info->m_Height,
-		         VIDEO_MAX_W, VIDEO_MAX_H);
+		         g_alloc_w, g_alloc_h);
 
 		/*
 		 * Say so, rather than failing quietly.
@@ -653,6 +727,10 @@ static void worker(void *arg)
 	}
 }
 
+/*
+ * Start decoding a new stream: set up libmpeg, the picture buffer, the
+ * texture (taking the poster VRAM), and the decoder thread on first use.
+ */
 int video_begin(GSGLOBAL *gs)
 {
 	g_err[0]   = '\0';
@@ -689,8 +767,27 @@ int video_begin(GSGLOBAL *gs)
 	 * console with nothing on screen. Here a failure is just a message.
 	 */
 	if (!g_tex_held) {
-		g_tex.Width    = VIDEO_MAX_W;
-		g_tex.Height   = VIDEO_MAX_H;
+		/*
+		 * Sized to the expected picture: coded sizes are whole 16x16
+		 * macroblocks, plus one spare row in case the transcode comes
+		 * out a little taller than predicted, never above the maximum.
+		 * The GS stores texture rows in units of 64 pixels.
+		 */
+		int aw = VIDEO_MAX_W, ah = VIDEO_MAX_H;
+
+		if (g_exp_w > 0 && g_exp_h > 0) {
+			aw = (g_exp_w + 15) & ~15;
+			ah = ((g_exp_h + 15) & ~15) + 16;
+
+			if (aw > VIDEO_MAX_W) aw = VIDEO_MAX_W;
+			if (ah > VIDEO_MAX_H) ah = VIDEO_MAX_H;
+		}
+
+		g_alloc_w = aw;
+		g_alloc_h = ah;
+
+		g_tex.Width    = (aw + 63) & ~63;
+		g_tex.Height   = ah;
 		g_tex.PSM      = GS_PSM_CT32;
 		g_tex.Filter   = GS_FILTER_LINEAR;
 		g_tex.Mem      = NULL;            /* filled by DMA, not by gsKit */
@@ -698,14 +795,14 @@ int video_begin(GSGLOBAL *gs)
 		g_tex.Clut     = NULL;
 
 		g_tex.Vram = gsKit_vram_alloc(gs,
-		                 gsKit_texture_size(VIDEO_MAX_W, VIDEO_MAX_H,
+		                 gsKit_texture_size(g_tex.Width, g_tex.Height,
 		                                    GS_PSM_CT32),
 		                 GSKIT_ALLOC_USERBUFFER);
 
 		if (g_tex.Vram == GSKIT_ALLOC_ERROR) {
 			snprintf(g_err, sizeof(g_err),
 			         "No VRAM for %dx%d: %u KB used of 4096",
-			         VIDEO_MAX_W, VIDEO_MAX_H,
+			         g_tex.Width, g_tex.Height,
 			         (unsigned)(gs->CurrentPointer / 1024));
 			poster_reinit(gs);
 			return 0;
@@ -869,6 +966,10 @@ int video_begin(GSGLOBAL *gs)
 	return 1;
 }
 
+/*
+ * Unsynchronised presentation (no sound): show the decoded picture and ask
+ * for the next.
+ */
 int video_step(int due)
 {
 	if (!g_active)
@@ -914,6 +1015,7 @@ int video_step(int due)
 	return 2;                          /* still working */
 }
 
+/* Whether a decoded picture is waiting, and its timestamp. */
 int video_peek(long long *pts90)
 {
 	if (!g_active || g_fail || !g_have)
@@ -941,6 +1043,11 @@ static void request_next(void)
 	}
 }
 
+/*
+ * Synchronised presentation, driven by sync_step: act 1 shows the waiting
+ * picture (scatter it into the texture) and asks for the next, -1 drops
+ * it, 0 waits. Returns 0 at the end, 1 shown, 2 waiting, -1 on error.
+ */
 int video_step_sync(int act)
 {
 	if (!g_active)
@@ -998,6 +1105,10 @@ int video_step_sync(int act)
 	return 2;
 }
 
+/*
+ * Whether the decoder has been inside one picture for far too long; see
+ * the comment inside.
+ */
 int video_stalled(void)
 {
 	/*
@@ -1024,18 +1135,38 @@ int video_stalled(void)
 	return ++still > 180;              /* three seconds on one picture */
 }
 
+/* Draw the current picture as a textured sprite filling the given box. */
 void video_draw(GSGLOBAL *gs, float x, float y, float w, float h)
 {
 	if (!g_ready)
 		return;
 
+	/* Layout space to canvas (layout.h), then canvas to framebuffer. */
+	x = LAY_X(x);
+	y = LAY_Y(y) + SCR_Y0;
+	w = LAY_W(w);
+	h = LAY_H(h);
+
+	/*
+	 * Sample half a texel inside the picture's edges. The texture is
+	 * drawn smoothed (bilinear), which at an edge blends in half a texel
+	 * beyond it - and past the picture's last row are the spare rows of
+	 * the reservation, holding whatever that VRAM held before (a poster,
+	 * a previous film). That showed as a thin coloured line under 16:9
+	 * films. Half a texel at each edge is invisible.
+	 */
 	gsKit_prim_sprite_texture(gs, &g_tex,
-	                          x, y, 0.0f, 0.0f,
+	                          x, y, 0.5f, 0.5f,
 	                          x + w, y + h,
-	                          (float)video_width(), (float)video_height(),
+	                          (float)video_width() - 0.5f,
+	                          (float)video_height() - 0.5f,
 	                          2, GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0));
 }
 
+/*
+ * Give the VRAM back without touching a wedged decoder; see the comment
+ * inside.
+ */
 void video_abandon(GSGLOBAL *gs)
 {
 	/*
@@ -1068,6 +1199,11 @@ void video_abandon(GSGLOBAL *gs)
 	poster_reinit(gs);
 }
 
+/*
+ * Stop decoding: let the decoder finish its picture, replace it if it was
+ * set aside, reset the IPU and destroy libmpeg, then give the VRAM back to
+ * the posters.
+ */
 void video_end(GSGLOBAL *gs)
 {
 	if (!g_active) {
@@ -1190,6 +1326,7 @@ void video_end(GSGLOBAL *gs)
 	poster_reinit(gs);
 }
 
+/* video_end, keeping the last picture on screen (a seek or a pause). */
 void video_end_keep(GSGLOBAL *gs)
 {
 	if (!g_active)
@@ -1200,6 +1337,7 @@ void video_end_keep(GSGLOBAL *gs)
 	g_keep_on_end = 0;
 }
 
+/* Release a picture kept by video_end_keep and give its VRAM back. */
 void video_release(GSGLOBAL *gs)
 {
 	if (!g_tex_held)
@@ -1210,6 +1348,7 @@ void video_release(GSGLOBAL *gs)
 	poster_reinit(gs);
 }
 
+/* Whether there is a picture to draw. */
 int video_has_picture(void) { return g_ready; }
 /* The last watchdog rescue's evidence, once: "" afterwards. */
 const char *video_take_stuck_report(void)

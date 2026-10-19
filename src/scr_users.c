@@ -1,3 +1,8 @@
+/*
+ * 'Who is watching?': the server's users as tiles, signing in at once with
+ * a saved sign-in, or through the sign-in screen.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "jf.h"
@@ -17,7 +22,7 @@
  */
 
 #define MAX_TILES  (JF_MAX_USERS + SETTINGS_MAX_USERS + 1)
-#define VISIBLE    4
+#define VISIBLE    (lay->users_visible)   /* tiles on screen, from the layout */
 
 typedef struct {
 	char name[64];
@@ -33,6 +38,10 @@ static int  g_first;
 static char g_pick[64];     /* the user a job is working on */
 static int  g_pick_pw;
 
+/*
+ * Build the tiles: the server's public users, users signed in here but not
+ * listed (hidden accounts), then 'Other user'.
+ */
 static void build(void)
 {
 	g_count = 0;
@@ -85,6 +94,7 @@ void job_load_users(void)
 	app_goto(SCR_USERS);
 }
 
+/* After signing in: HOME. */
 static void open_library(void)
 {
 	jf_start_index = 0;
@@ -127,12 +137,14 @@ static void job_no_password(void)
 	app_fail(jf_err_title(), jf_err_body());
 }
 
+/* Job: sign the chosen user out, then reload the user page. */
 static void job_sign_out(void)
 {
 	jf_sign_out(g_pick);
 	app_run_job(job_load_users, "Loading users...");
 }
 
+/* Rebuild the tiles and keep the selection valid. */
 static void enter(void)
 {
 	build();
@@ -143,6 +155,11 @@ static void enter(void)
 		g_first = g_sel;
 }
 
+/*
+ * Left/Right choose a user; X signs in (at once, by password, or by name
+ * for Other user); Triangle signs a saved user out; Circle back to the
+ * connect screen.
+ */
 static void input(u32 p)
 {
 	if (p & PAD_LEFT)  { if (g_sel > 0) g_sel--; }
@@ -193,6 +210,7 @@ static void disc(float cx, float cy, int r, u64 col)
 	}
 }
 
+/* A small padlock icon, from boxes. */
 static void lock(float x, float y, u64 col)
 {
 	ui_box(x + 2, y,      8, 2, col);      /* the shackle */
@@ -201,6 +219,7 @@ static void lock(float x, float y, u64 col)
 	ui_box(x,     y + 6, 12, 9, col);      /* the body */
 }
 
+/* The colour of a user's avatar circle, by position. */
 static u64 tile_colour(int i)
 {
 	static const u64 c[] = {
@@ -214,6 +233,10 @@ static u64 tile_colour(int i)
 	return c[i % 5];
 }
 
+/*
+ * 'Who is watching?': up to four tiles with initial, name and status,
+ * scroll arrows and hints.
+ */
 static void draw(void)
 {
 	ui_waves();

@@ -1,3 +1,7 @@
+/*
+ * JSON helpers over jsmn; see json.c.
+ */
+
 #ifndef JSON_H
 #define JSON_H
 
@@ -24,7 +28,6 @@ int  json_size(int i);
  */
 int  json_milli(int tok);
 int  json_is_array(int i);
-int  json_is_object(int i);
 
 void json_str(int tok, char *out, int max);   /* unescapes, \uXXXX -> Latin-1 */
 int  json_int(int tok);

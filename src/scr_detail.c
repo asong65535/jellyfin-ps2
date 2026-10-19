@@ -1,3 +1,9 @@
+/*
+ * A film's (or episode's) page: poster, synopsis, Play and Resume, audio
+ * and subtitle choices. Starts playback, and starts the next episode for
+ * auto-play.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "jf.h"
@@ -59,10 +65,19 @@ static int g_row;            /* 0..n, the last row being Play */
  */
 static int has_resume(void) { return jf_detail.resume_ticks > 0; }
 
+/* Row index of the Play button (always 0). */
 static int play_row(void)   { return 0; }
+
+/* Row index of Resume, or -1 when there is no resume point. */
 static int resume_row(void) { return has_resume() ? 1 : -1; }
+
+/* First row after the buttons. */
 static int first_sel(void)  { return has_resume() ? 2 : 1; }
+
+/* Row of the audio selector, or -1 with only one audio track. */
 static int audio_row(void)  { return jf_audio_count > 1 ? first_sel() : -1; }
+
+/* Row of the subtitle selector, or -1 with no subtitles. */
 static int sub_row(void)
 {
 	if (jf_sub_count < 1)
@@ -97,6 +112,7 @@ static int last_row(void)
 #define TX (PX + PW + 28.0f)
 #define TW (SCR_W - TX - 40.0f)
 
+/* Lines the synopsis needs, to know how far L2/R2 can scroll it. */
 static int overview_lines(void)
 {
 	if (!jf_detail.overview[0])
@@ -108,11 +124,19 @@ static int overview_lines(void)
 /* A message from the last playback, shown until something else happens. */
 static char g_notice[80];
 
+/*
+ * A red line for the top of the page, such as the freeze safety net's
+ * message.
+ */
 void scr_detail_set_notice(const char *s)
 {
 	snprintf(g_notice, sizeof(g_notice), "%s", s ? s : "");
 }
 
+/*
+ * Fresh state for a newly opened item: focus on Play, default tracks, no
+ * notice.
+ */
 void scr_detail_reset(void)
 {
 	g_notice[0] = '\0';
@@ -180,6 +204,10 @@ static int same_language(const char *a, const char *b)
 	return la > 0 && la == lb && strncmp(a, b, la) == 0;
 }
 
+/*
+ * The index of the track matching want: the same label, else the same
+ * language. -1 if none.
+ */
 static int pick(const JfStream *s, int n, const char *want)
 {
 	for (int i = 0; i < n; i++)
@@ -220,6 +248,11 @@ void job_play_next(void)
 	start_play(0);
 }
 
+/*
+ * Up/Down move between rows, Left/Right change a selector, X plays or
+ * resumes, L2/R2 scroll the synopsis, Circle goes back (to HOME, the
+ * episode list or the grid).
+ */
 static void input(u32 p)
 {
 	/* Scroll the synopsis. Nothing else on this screen uses the triggers. */
@@ -284,6 +317,10 @@ static void input(u32 p)
 	}
 }
 
+/*
+ * The film page: poster, title, year and runtime, synopsis, Play/Resume,
+ * the audio and subtitle selectors with the TEXT/IMAGE badge, any notice.
+ */
 static void draw(void)
 {
 	ui_waves();

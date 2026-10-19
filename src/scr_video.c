@@ -1,5 +1,13 @@
-#include "freeze.h"
+/*
+ * Video playback. Opens the stream, runs the network reader thread that
+ * demuxes it into the video and audio rings, starts the decoder (video.c)
+ * and sound (vaudio.c), presents pictures against the sound clock, and
+ * handles the bar, pause, seek, subtitles, the end of the film and
+ * stopping.
+ */
+
 #include "screens.h"
+#include "freeze.h"
 #include "ui.h"
 #include "app.h"
 #include "video.h"
@@ -214,6 +222,10 @@ static volatile long long g_apts0 = -1;
 /* The first picture is up: the sound may start. */
 static volatile int g_first_shown;
 
+/*
+ * Record that the video byte at stream position pos starts a picture with
+ * timestamp pts (see ts.c's marks).
+ */
 static void add_vmark(long long pos, long long pts)
 {
 	int k = g_vmark_n & (VMARKS - 1);
@@ -245,12 +257,20 @@ static long long take_pts(void)
 	return best;
 }
 
+/*
+ * Bytes waiting in a ring (head written by the reader, tail by the
+ * consumer).
+ */
 static int ring_used(int head, int tail, int size)
 {
 	int n = head - tail;
 	return n < 0 ? n + size : n;
 }
 
+/*
+ * Copy n bytes into a ring at head, wrapping. The caller has checked there
+ * is room.
+ */
 static void ring_put(unsigned char *ring, int size, volatile int *head,
                      const unsigned char *src, int n)
 {
@@ -268,6 +288,9 @@ static void ring_put(unsigned char *ring, int size, volatile int *head,
 	*head = (h + n) % size;
 }
 
+/*
+ * Copy up to max bytes out of a ring at tail, wrapping. Returns the count.
+ */
 static int ring_take(const unsigned char *ring, int size, volatile int *tail,
                      int head, unsigned char *dst, int max)
 {
@@ -427,12 +450,17 @@ static char g_rstack[32 * 1024] __attribute__((aligned(16)));  /* was 8 KB */
  */
 #define STACK_GUARD 1024
 
+/* Fill the bottom of a thread stack with a known pattern. */
 static void stack_guard_fill(char *stk)
 {
 	for (int i = 0; i < STACK_GUARD; i++)
 		stk[i] = (char)0xA5;
 }
 
+/*
+ * Whether that pattern is still intact (1) or the stack overran into it
+ * (0).
+ */
 static int stack_guard_ok(const char *stk)
 {
 	for (int i = 0; i < STACK_GUARD; i++)
@@ -442,6 +470,7 @@ static int stack_guard_ok(const char *stk)
 	return 1;
 }
 
+/* The network reader thread's stack guard, for the DEBUG_UI readout. */
 int scr_video_stack_ok(void) { return stack_guard_ok(g_rstack); }
 
 static volatile int g_src_done;   /* the stream has ended */
@@ -505,6 +534,11 @@ static int end_of_data(void *buf, int len)
 	return 4;
 }
 
+/*
+ * The decoder's data source (data_cb in video.c): video bytes from the
+ * ring, waiting for the reader if it is empty; at the end of the stream,
+ * the closing start code once, then 0.
+ */
 static int read_stream(void *buf, int len)
 {
 	/*
@@ -554,10 +588,20 @@ int scr_video_audio_read(void *buf, int len)
 	return ring_take(g_aring, ARING, &g_atail, g_ahead, buf, len);
 }
 
+/* Audio bytes waiting, for the sound thread. */
 int scr_video_audio_avail(void) { return ring_used(g_ahead, g_atail, ARING); }
+
+/*
+ * Timestamp of the first audio byte of this stream, for aligning sound
+ * with the first picture.
+ */
 long long scr_video_audio_pts0(void) { return g_apts0; }
+
+/* Whether the first picture is on screen yet (the sound waits for it). */
 int scr_video_first_shown(void) { return g_first_shown; }
 long long scr_video_first_vpts(void);
+
+/* Whether the stream has ended or is being stopped. */
 int scr_video_source_done(void) { return g_src_done || g_stop_src; }
 
 /*
@@ -603,6 +647,7 @@ static long long wall90(void)
 	return g_wall_acc * 90000 / CLOCKS_PER_SEC;
 }
 
+/* Reset the playback clock for a new stream. */
 static void clock_reset(void)
 {
 	g_wall_last  = clock();
@@ -739,6 +784,10 @@ static char g_end_why = '-';
 static int  g_end_cut_ms;
 static int  g_end_left;
 
+/*
+ * Whether the film should end after the picture at vp (the time and data
+ * rules), recording why for the readout.
+ */
 static int near_the_end(long long vp)
 {
 	long long len = jf_detail.runtime_ticks;
@@ -766,6 +815,7 @@ static int near_the_end(long long vp)
 	return 1;
 }
 
+/* The readout line about how the last film ended (DEBUG_UI). */
 static const char *end_debug(void)
 {
 	static char buf[96];
@@ -775,6 +825,44 @@ static const char *end_debug(void)
 	         settings.end_margin_kb, settings.end_early_ms,
 	         g_end_why, g_end_cut_ms, g_end_left >> 10);
 	return buf;
+}
+
+/*
+ * Present pictures against the clock: show the held picture when due, drop
+ * it if too late, wait if early; returns what video_step_sync reported (0
+ * end, 1 shown, 2 waiting).
+ */
+/*
+ * Timing diagnostics for the DEBUG_UI readout: why pictures are dropped.
+ * The clock at the first picture versus that picture's PTS, the last
+ * dropped picture's lateness, the largest, and the spacing between the
+ * last pictures' timestamps (a steady frame period when all is well).
+ */
+static long long g_dbg_clk0 = -1;     /* clock - PTS at the first picture */
+static int       g_dbg_late_last, g_dbg_late_max;   /* ms */
+static long long g_dbg_prev_vp = -1;
+static int       g_dbg_gap[4];        /* ms between recent PTS */
+static int       g_dbg_gap_n;
+
+/* Frames the screen thread drew in the last second (diagnostics): 60
+ * when it keeps up with the display, less when something holds it. */
+static int       g_dbg_ui_fps, g_dbg_ui_count;
+static long long g_dbg_ui_t0 = -1;
+
+static void count_ui_frame(void)
+{
+	long long w = wall90();
+
+	if (g_dbg_ui_t0 < 0 || w < g_dbg_ui_t0)
+		g_dbg_ui_t0 = w;               /* first frame, or a new stream's clock */
+
+	g_dbg_ui_count++;
+
+	if (w - g_dbg_ui_t0 >= 90000) {
+		g_dbg_ui_fps   = g_dbg_ui_count;
+		g_dbg_ui_count = 0;
+		g_dbg_ui_t0    = w;
+	}
 }
 
 static int sync_step(void)
@@ -793,15 +881,34 @@ static int sync_step(void)
 
 			g_drift = (int)((now - vp) / 90);
 
+			/* Diagnostics: the clock against the picture, the first
+			 * time both exist (biased so that 0 can be stored). */
+			if (g_dbg_clk0 < 0)
+				g_dbg_clk0 = now - vp + 1000000;
+
 			if (now - vp > 2LL * g_frame90 &&
-			    w - g_last_show < 90000 / 4)
+			    w - g_last_show < 90000 / 4) {
 				act = -1;                  /* late: drop */
+
+				g_dbg_late_last = (int)((now - vp) / 90);
+				if (g_dbg_late_last > g_dbg_late_max)
+					g_dbg_late_max = g_dbg_late_last;
+			}
 			else if (vp - now <= 8 * 90)
 				act = 1;                   /* due: show */
 		}
 	}
 
 	int r = video_step_sync(act);
+
+	if (r == 1 || r == -1 || act == -1) {
+		/* Spacing of consecutive picture timestamps. */
+		if (g_dbg_prev_vp >= 0 && vp != g_dbg_prev_vp) {
+			g_dbg_gap[g_dbg_gap_n & 3] = (int)((vp - g_dbg_prev_vp) / 90);
+			g_dbg_gap_n++;
+		}
+		g_dbg_prev_vp = vp;
+	}
 
 	if (r == 1) {
 		/* The PTS first: the sound reads it as soon as it sees the
@@ -819,9 +926,12 @@ static int sync_step(void)
 
 	return r;
 }
-int scr_video_audio_pts(void)   { return g_ats.has_pts ? g_ats.pts_ms : -1; }
-int scr_video_video_pts(void)   { return g_ts.has_pts  ? g_ts.pts_ms  : -1; }
 
+/*
+ * Development data source: with no item to play, video is read from the
+ * file VIDEO_PATH (mass:/test.bin) instead of the network - a test harness
+ * for the decoder that needs no server.
+ */
 static int read_file(void *buf, int len)
 {
 	if (g_fd < 0)
@@ -891,6 +1001,7 @@ static long long g_buffer_since;   /* when ST_BUFFER began, 90 kHz */
 
 static void stop(void);
 
+/* A stage's name, for the readout. */
 static const char *stage_name(Stage s)
 {
 	switch (s) {
@@ -904,8 +1015,33 @@ static const char *stage_name(Stage s)
 	}
 }
 
+/*
+ * The picture's shape when the viewer chose one (Triangle), as
+ * width/height x 1000, or 0 to use jf_detail.aspect_milli. Only offered
+ * when that shape is a guess (aspect_sure 0); kept across seeks and
+ * pauses of the same film, reset for each new one.
+ */
+static int       g_shape_choice;
+static long long g_shape_note_until;     /* show the choice until (wall90) */
+
+/* Clear every per-stream variable before a new stream starts. */
 static void reset_stream(void)
 {
+	/*
+	 * The shape note's end time is on this stream's clock, which starts
+	 * again from zero: left alone, it showed again at the start of every
+	 * later film.
+	 */
+	g_shape_note_until = 0;
+
+	/* Timing diagnostics, per stream (DEBUG_UI readout). */
+	g_dbg_clk0      = -1;
+	g_dbg_late_last = 0;
+	g_dbg_late_max  = 0;
+	g_dbg_prev_vp   = -1;
+	g_dbg_gap_n     = 0;
+	memset(g_dbg_gap, 0, sizeof(g_dbg_gap));
+
 	/*
 	 * Nothing may survive from the last stream.
 	 *
@@ -996,24 +1132,19 @@ static char g_item[40];
 static int g_audio_index = -1;   /* -1 leaves the choice to Jellyfin */
 static int g_sub_index   = -1;   /* -1 for no subtitles */
 
-void scr_video_open_tracks(const char *item_id, int audio_index, int sub_index)
-{
-	scr_video_open_at(item_id, audio_index, sub_index, 0);
-}
-
 void scr_video_open_at(const char *item_id, int audio_index, int sub_index,
                        long long start_ticks)
 {
+	if (strcmp(g_item, item_id ? item_id : "") != 0)
+		g_shape_choice = 0;         /* a new film: its own shape */
+
+	g_shape_note_until = 0;
+
 	snprintf(g_item, sizeof(g_item), "%s", item_id ? item_id : "");
 
 	g_audio_index = audio_index;
 	g_sub_index   = sub_index;
 	g_open_start  = start_ticks > 0 ? start_ticks : 0;
-}
-
-void scr_video_open(const char *item_id)
-{
-	scr_video_open_tracks(item_id, -1, -1);
 }
 
 /* One startup step at a time, held long enough to read. */
@@ -1055,6 +1186,7 @@ static void advance_startup(void)
 			 * macroblock. Without this those few rows are drawn.
 			 */
 			video_set_crop(jf_video_pic_w, jf_video_pic_h);
+			video_expect_size(jf_video_pic_w, jf_video_pic_h);
 
 			video_set_source(read_stream);
 			video_set_pts_source(take_pts);
@@ -1126,6 +1258,7 @@ static void advance_startup(void)
 			}
 
 			video_set_crop(0, 0);   /* whatever the file says */
+			video_expect_size(0, 0);
 			video_set_source(read_file);
 			video_set_pts_source(NULL);
 			video_set_frame90(3003);
@@ -1277,6 +1410,10 @@ static void save_stuck_report(void)
 	fclose(f);
 }
 
+/*
+ * Stop playback (Circle, end of film, or the safety net): tear everything
+ * down, report the stop, save the resume point.
+ */
 static void stop(void)
 {
 	teardown(0);
@@ -1389,6 +1526,10 @@ static void teardown(int keep)
 #define LIVE_PAUSE_MAX  (30LL * 90000)
 
 
+/*
+ * Pause in place: the stream stays open, the sound thread plays silence
+ * and the clock stops.
+ */
 static void live_pause(void)
 {
 	g_live_paused = 1;
@@ -1398,6 +1539,7 @@ static void live_pause(void)
 		vaudio_pause(1);
 }
 
+/* Resume from a live pause. */
 static void live_resume(void)
 {
 	g_live_paused = 0;
@@ -1416,6 +1558,7 @@ static void live_resume(void)
  */
 #define SEEK_END_GUARD (30LL * 10000000LL)
 
+/* Whether +20 s is allowed: not within the last 30 s of the runtime. */
 static int fwd_allowed(void)
 {
 	long long len  = jf_detail.runtime_ticks;
@@ -1437,6 +1580,10 @@ static long long clamp_pos(long long t)
 	return t < 0 ? 0 : t;
 }
 
+/*
+ * Start a new stream from g_start_ticks: reset, then the stages from
+ * ST_OPEN.
+ */
 static void begin_stream(void)
 {
 	reset_stream();
@@ -1459,10 +1606,17 @@ static void restart_at(long long pos, int pause)
 		begin_stream();
 }
 
+/*
+ * Per frame: arm the freeze net while running, handle stop, the outro, the
+ * start-up stages, picture presentation, and the buttons (pause, -10 s,
+ * +20 s, the bar).
+ */
 static void input(u32 p)
 {
 	/* The freeze net watches playback proper only (freeze.h). */
 	freeze_arm(g_stage == ST_RUNNING && !g_stopping);
+
+	count_ui_frame();                 /* diagnostics: screen frame rate */
 
 	/*
 	 * Stopping takes a moment - the decoder, the reader and two short
@@ -1494,6 +1648,19 @@ static void input(u32 p)
 
 	if (p & PAD_CIRCLE) {
 		g_stopping = 1;
+		return;
+	}
+
+	/*
+	 * Triangle: the picture's shape, 4:3 or 16:9 - offered only when it
+	 * is a guess (a DVD-sized file that lost its note; see aspect_sure).
+	 * A known shape is never changed.
+	 */
+	if ((p & PAD_TRIANGLE) && g_item[0] && !jf_detail.aspect_sure) {
+		int now = g_shape_choice ? g_shape_choice : jf_detail.aspect_milli;
+
+		g_shape_choice      = (now == 1778) ? 1333 : 1778;
+		g_shape_note_until  = wall90() + 2LL * 90000;
 		return;
 	}
 
@@ -1861,6 +2028,10 @@ static const char *bar_status(void)
 	return NULL;
 }
 
+/*
+ * Whether the control bar is showing (always while loading or paused, else
+ * for 3 s after a press).
+ */
 static int bar_visible(void)
 {
 	return bar_status() != NULL || wall90() < g_bar_until;
@@ -1880,21 +2051,41 @@ static void draw_picture(void)
 	int vh = video_height();
 
 	if (vw <= 0 || vh <= 0) {
-		video_draw(ui_gs(), 0, 0, SCR_W, SCR_H);
+		video_draw(ui_gs(), SCR_LEFT, SCR_TOP, SCR_FULL_W, SCR_FB_H);
 		return;
 	}
 
-	const float screen = 4.0f / 3.0f;
-	float pic = (float)vw / vh;
-	float w = SCR_W;
-	float h = SCR_H;
+	/* The screen's shape, from the display profile (4:3 today). */
+	const float screen = disp->screen_shape_milli / 1000.0f;
+
+	/*
+	 * The intended shape, not the stored size: a DVD's 720x480 is meant
+	 * to be seen as 4:3 or 16:9 (see aspect_milli in jf.h). The GS
+	 * stretches the picture to whatever box it is drawn into, so this is
+	 * all it takes. The stored size remains the fallback, for the test
+	 * file and anything without a shape.
+	 */
+	int   shape = g_shape_choice ? g_shape_choice : jf_detail.aspect_milli;
+	float pic   = (g_item[0] && shape > 0) ? shape / 1000.0f : (float)vw / vh;
+	/*
+	 * The whole 640x480 framebuffer, which is exactly 4:3 (see config.h),
+	 * from SCR_TOP: the picture uses all 480 lines, not the menus' 448.
+	 */
+	/* The whole screen, not the menus' area: in 1080i that is the full
+	 * 16:9 width. */
+	float fw = SCR_FULL_W;
+	float w  = fw;
+	float h  = SCR_FB_H;
 
 	if (pic > screen)
-		h = SCR_H * screen / pic;
+		h = SCR_FB_H * screen / pic;
 	else if (pic < screen)
-		w = SCR_W * pic / screen;
+		w = fw * pic / screen;
 
-	video_draw(ui_gs(), (SCR_W - w) * 0.5f, (SCR_H - h) * 0.5f, w, h);
+	ui_dither(1);                  /* pictures are dithered (16-bit only) */
+	video_draw(ui_gs(), SCR_LEFT + (fw - w) * 0.5f,
+	           SCR_TOP + (SCR_FB_H - h) * 0.5f, w, h);
+	ui_dither(0);
 }
 
 /* The diagnostic readout, top left. Square hides it. */
@@ -1912,6 +2103,34 @@ static void draw_readout(void)
 	         vaudio_frames(), vaudio_underruns(),
 	         g_adropped + g_vdropped, g_drift);
 	ui_text(8, 8, 1.0f, C_WHITE, d);
+
+	/*
+	 * Timing: a0-v0 is how far the sound's first PTS is from the first
+	 * picture's (ms, positive: sound starts later); skip is the samples
+	 * the sound skipped (negative: silence added); clk0 is the clock
+	 * minus the picture's PTS when the clock first ran; late last/max
+	 * are how far behind dropped pictures were (ms); gaps are the last
+	 * PTS spacings (ms).
+	 */
+	{
+		long long a0 = scr_video_audio_pts0();
+		long long v0 = g_first_vpts;
+
+		snprintf(d, sizeof(d),
+		         "a0-v0 %d skip %d clk0 %d late %d/%d gap %d %d %d %d ui %d",
+		         (a0 >= 0 && v0 >= 0) ? (int)((a0 - v0) / 90) : 0,
+		         (int)vaudio_skip(),
+		         g_dbg_clk0 >= 0 ? (int)((g_dbg_clk0 - 1000000) / 90) : 0,
+		         g_dbg_late_last, g_dbg_late_max,
+		         g_dbg_gap[0], g_dbg_gap[1], g_dbg_gap[2], g_dbg_gap[3],
+		         g_dbg_ui_fps);
+		ui_text(8, 162, 1.0f, C_WHITE, d);
+	}
+
+	/* Stack guards of the three playback threads: 1 intact, 0 overrun. */
+	snprintf(d, sizeof(d), "stack decoder %d sound %d reader %d",
+	         video_stack_ok(), vaudio_stack_ok(), scr_video_stack_ok());
+	ui_text(8, 140, 1.0f, C_WHITE, d);
 
 	/* What was asked for, and under which session: a wrong film shows
 	 * here as a title that does not match the picture. */
@@ -2014,6 +2233,7 @@ static void draw_seek_glyph(float cx, float cy, int dir, u64 col)
 #define VBH 42.0f
 #define VBGAP 14.0f
 
+/* One of the three playback buttons (-10 s, play/pause, +20 s). */
 static void draw_vbutton(float x, float y, int kind, int focused)
 {
 	if (focused)
@@ -2064,7 +2284,7 @@ static void draw_bar(const char *status)
 	const float bx  = 110.0f, bw = SCR_W - 220.0f;
 	const float by  = top + 106;
 
-	ui_box(0, top, SCR_W, SCR_H - top,
+	ui_box(SCR_LEFT, top, SCR_FULL_W, SCR_BOTTOM - top,
 	       GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x60, 0x00));
 
 	{
@@ -2112,11 +2332,18 @@ static void draw_bar(const char *status)
 			        C_DIM, right);
 	}
 
-	{
+	/* Triangle appears only when the picture's shape is a guess. */
+	if (jf_detail.aspect_sure || !g_item[0]) {
 		static const BtnGlyph g[] = { BTN_CROSS, BTN_DPAD, BTN_CIRCLE };
 		static const char *l[] = { "Select", "Move", "Back" };
 
 		ui_hint_row(g, l, 3);
+	} else {
+		static const BtnGlyph g[] = { BTN_CROSS, BTN_DPAD, BTN_TRIANGLE,
+		                              BTN_CIRCLE };
+		static const char *l[] = { "Select", "Move", "Shape", "Back" };
+
+		ui_hint_row(g, l, 4);
 	}
 }
 
@@ -2127,6 +2354,10 @@ static void draw_bar(const char *status)
  */
 #define SUB_MAX_LINES 6
 
+/*
+ * The current subtitle line, wrapped, white on a black outline, above the
+ * bar when it shows.
+ */
 static void draw_subs(void)
 {
 	const char *t = subs_at((int)(g_pos_ticks / 10000));
@@ -2208,6 +2439,10 @@ static void draw_subs(void)
 	}
 }
 
+/*
+ * The playback screen: the picture, subtitles, the fade at the end, the
+ * bar, and the readout (DEBUG_UI).
+ */
 static void draw(void)
 {
 	int pic     = video_has_picture();
@@ -2219,12 +2454,30 @@ static void draw(void)
 	 * bars showed the waves through them, which looks like a fault.
 	 */
 	if (pic || g_playing)
-		ui_box(0, 0, SCR_W, SCR_H, GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
+		ui_box(SCR_LEFT, SCR_TOP, SCR_FULL_W, SCR_FB_H, GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
 	else
 		ui_waves();
 
-	if (pic)
+	if (pic) {
 		draw_picture();
+
+		/*
+		 * The shape just chosen with Triangle, for two seconds - only
+		 * ever for a file whose shape is a guess. Worded by what it does
+		 * on screen, since "4:3" alone reads wrong on a film letterboxed
+		 * inside a 4:3 picture.
+		 */
+		if (!jf_detail.aspect_sure && wall90() < g_shape_note_until) {
+			const char *t = g_shape_choice == 1778
+			                ? "Picture: 16:9 (widescreen)"
+			                : "Picture: 4:3 (full screen)";
+			float tw = ui_text_w(1.0f, t);
+
+			ui_round((SCR_W - tw) / 2 - 10, 18, tw + 20, 28, 5,
+			         GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x60, 0x00));
+			ui_text_c(SCR_W / 2, 22, 1.0f, C_WHITE, t);
+		}
+	}
 
 	if (pic && subs_active_for(g_item) && g_stage != ST_DONE && !g_stopping &&
 	    !g_outro)
@@ -2238,7 +2491,7 @@ static void draw(void)
 		if (a > 0x80) a = 0x80;
 		if (a < 0)    a = 0;
 
-		ui_box(0, 0, SCR_W, SCR_H, GS_SETREG_RGBAQ(0, 0, 0, a, 0));
+		ui_box(SCR_LEFT, SCR_TOP, SCR_FULL_W, SCR_FB_H, GS_SETREG_RGBAQ(0, 0, 0, a, 0));
 	}
 
 	if (DEBUG_UI && g_playing && g_show_debug)

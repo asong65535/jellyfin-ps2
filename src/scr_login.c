@@ -1,3 +1,8 @@
+/*
+ * Signing in: a name (for Other user) and a password on the on-screen
+ * keyboard. The password is sent once and never kept.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "osk.h"
@@ -28,6 +33,10 @@ static void bind(void)
 		osk_bind(g_pw, sizeof(g_pw));
 }
 
+/*
+ * Open the sign-in screen for name (or ask for a name first), with an
+ * optional red note.
+ */
 void login_open(const char *name, int ask_name, const char *note)
 {
 	snprintf(g_name, sizeof(g_name), "%s", name ? name : "");
@@ -40,6 +49,10 @@ void login_open(const char *name, int ask_name, const char *note)
 	app_goto(SCR_LOGIN);
 }
 
+/*
+ * Job: sign in; on success go to HOME, on a wrong password come back here
+ * with a note. The password is wiped either way.
+ */
 static void job_login(void)
 {
 	int rc = jf_sign_in(g_name, g_pw);
@@ -63,6 +76,10 @@ static void job_login(void)
 	app_fail(jf_err_title(), jf_err_body());
 }
 
+/*
+ * Start clean unless coming back from a failed attempt, and bind the
+ * keyboard.
+ */
 static void enter(void)
 {
 	if (!g_keep) {                /* reached some other way: start clean */
@@ -74,6 +91,10 @@ static void enter(void)
 	bind();
 }
 
+/*
+ * Enter/START: from the name go to the password, from the password sign
+ * in.
+ */
 static void submit(void)
 {
 	if (g_step == 0) {
@@ -89,6 +110,7 @@ static void submit(void)
 	app_run_job(job_login, "Signing in...");
 }
 
+/* The keyboard; Circle goes back a step or to the users. */
 static void input(u32 p)
 {
 	if (osk_input(p) || (p & PAD_START)) {
@@ -108,6 +130,10 @@ static void input(u32 p)
 	}
 }
 
+/*
+ * The sign-in screen: label, the name or password field (blocks, not
+ * letters), the keyboard.
+ */
 static void draw(void)
 {
 	ui_waves();

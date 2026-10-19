@@ -1,3 +1,9 @@
+/*
+ * IOP modules. Resets the IOP, patches it to accept modules from EE
+ * memory, and loads the drivers embedded in the ELF: USB storage,
+ * keyboard, network and sound.
+ */
+
 #include "mods.h"
 #include "config.h"
 
@@ -37,12 +43,17 @@ static char g_failed[160] = "";
 
 static ModsProgress g_progress;
 
+/* Report a loading step through the progress callback, if any. */
 static void say(const char *msg)
 {
 	if (g_progress)
 		g_progress(msg);
 }
 
+/*
+ * Add a module's name to the list of those that failed to load, shown on
+ * the connect screen.
+ */
 static void note_failure(const char *name)
 {
 	if (strlen(g_failed) + strlen(name) + 2 >= sizeof(g_failed))
@@ -52,6 +63,10 @@ static void note_failure(const char *name)
 	strcat(g_failed, name);
 }
 
+/*
+ * Load one IOP module from a buffer embedded in the ELF (bin2c), noting a
+ * failure. Returns the module id, or negative.
+ */
 static int load(const char *name, unsigned char *buf, unsigned int size)
 {
 	char msg[64];
@@ -67,6 +82,11 @@ static int load(const char *name, unsigned char *buf, unsigned int size)
 	return id;
 }
 
+/*
+ * Reset the IOP, patch it so modules can be loaded from EE memory, and
+ * load every module the app needs: USB (bdm, FAT, mass storage), keyboard,
+ * network (dev9, netman, smap), sound (libsd, audsrv).
+ */
 void mods_load(ModsProgress progress)
 {
 	g_progress = progress;
@@ -134,5 +154,8 @@ void mods_load(ModsProgress progress)
 	g_progress = NULL;
 }
 
+/* Whether a USB keyboard driver was loaded. */
 int         mods_have_keyboard(void) { return g_kbd; }
+
+/* Space-separated names of modules that failed to load, or ''. */
 const char *mods_failures(void)      { return g_failed; }

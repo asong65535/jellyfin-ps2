@@ -1,3 +1,8 @@
+/*
+ * The Jellyfin client: shared state (items, tracks, detail, users, HOME)
+ * and every request; see jf.c.
+ */
+
 #ifndef JF_H
 #define JF_H
 
@@ -41,6 +46,22 @@ typedef struct {
 	 */
 	int  width;
 	int  height;
+
+	/*
+	 * The picture's intended shape on screen, as width/height x 1000
+	 * (1333 for 4:3, 1778 for 16:9), and whether it is known for sure.
+	 *
+	 * DVDs and TV captures store their picture at 720x480 or 720x576 with
+	 * pixels that are not square: the file carries a note saying how wide
+	 * it is meant to be shown, which Jellyfin reports as AspectRatio. The
+	 * picture is drawn with this shape, not with its stored size.
+	 *
+	 * aspect_sure is 0 for a DVD-sized file whose note was lost (it claims
+	 * square pixels): the shape is then a guess, 4:3, and only then may
+	 * the viewer change it during playback (Triangle). See decide_aspect.
+	 */
+	int  aspect_milli;
+	int  aspect_sure;
 
 	/*
 	 * Frames per second, times 1000, from the video stream.
@@ -103,7 +124,7 @@ typedef struct {
 extern JfTab jf_tab;
 extern char  jf_query[64];          /* search term, used by the Search tab */
 
-extern JfItem jf_items[JF_PAGE];
+extern JfItem jf_items[JF_PAGE_MAX];
 extern int    jf_item_count;
 extern int    jf_total_count;       /* matches the current filter */
 extern int    jf_start_index;
@@ -228,28 +249,16 @@ int jf_load_episodes(const char *series_id, const char *season_id,
  *
  * Returns a pointer to a static buffer.
  */
-const char *jf_video_stream_path(const char *item_id);
 
 /*
- * The same, with chosen tracks.
+ * The transcode size to ask for: the smallest picture, in the file's stored
+ * proportions, that fills what the film covers on the 640x480 screen in its
+ * intended shape (jf_detail.aspect_milli), within 640x480. 640x480 for 4:3,
+ * 640x360 for 16:9, 640x426 for a DVD. Sizes that are not whole 16-pixel
+ * macroblocks are padded by the encoder and cropped when drawn.
  *
- * audio_index is a stream index; sub_index is one too, or -1 for none. Both
- * come from jf_audio and jf_subs, which jf_load_detail fills in.
- */
-const char *jf_video_stream_path_tracks(const char *item_id,
-                                        int audio_index, int sub_index);
-
-/*
- * What to ask the transcoder for, given the source size.
- *
- * Jellyfin preserves the source aspect exactly and only ever fits it inside
- * the box it is given, so the box has to be chosen such that the result has
- * both dimensions a multiple of 16. Anything else is padded up by the
- * encoder, and libmpeg then reports the padded size - so a 640x360 picture
- * decodes as 640x368 and the bottom eight rows are whatever the encoder left
- * there.
- *
- * Writes the box to *w and *h.
+ * Writes the box to *w and *h, and the picture Jellyfin will actually
+ * produce to jf_video_pic_w and jf_video_pic_h.
  */
 void jf_video_box(int src_w, int src_h, int *w, int *h);
 

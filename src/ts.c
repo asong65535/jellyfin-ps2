@@ -1,3 +1,9 @@
+/*
+ * The MPEG transport stream demuxer: splits the 188-byte packets of
+ * Jellyfin's stream into the video (PID 0x100) and audio (0x101)
+ * elementary streams, recording each picture's timestamp.
+ */
+
 #include "ts.h"
 
 #include <string.h>
@@ -5,6 +11,7 @@
 #define TS_PACKET 188
 #define TS_SYNC   0x47
 
+/* Reset a demuxer for a new stream, following the given PID. */
 void ts_init(TsDemux *d, int pid)
 {
 	d->pid     = pid;
@@ -138,6 +145,10 @@ static int packet(TsDemux *d, const unsigned char *p,
 	return n;
 }
 
+/*
+ * Split transport stream bytes into video and audio elementary streams in
+ * one pass; see ts.h for the buffer rules.
+ */
 void ts_feed2(TsDemux *v, TsDemux *a,
               const unsigned char *in, int in_len,
               unsigned char *vout, int vmax, int *vn,
@@ -212,77 +223,4 @@ void ts_feed2(TsDemux *v, TsDemux *a,
 		if (vmax - *vn < TS_PACKET || amax - *an < TS_PACKET)
 			break;
 	}
-}
-
-int ts_feed(TsDemux *d, const unsigned char *in, int in_len,
-            unsigned char *out, int out_max)
-{
-	int wrote = 0;
-	int i     = 0;
-
-	d->nmark = 0;
-
-	while (i < in_len) {
-		/*
-		 * Find the first packet boundary.
-		 *
-		 * A stream can be joined anywhere, and a 0x47 can occur inside
-		 * a payload by chance, so require a second one 188 bytes later
-		 * before believing it.
-		 */
-		if (!d->synced && d->have == 0) {
-			if (in[i] != TS_SYNC) {
-				i++;
-				continue;
-			}
-
-			if (i + TS_PACKET < in_len && in[i + TS_PACKET] != TS_SYNC) {
-				i++;
-				continue;              /* coincidence, not a packet */
-			}
-
-			d->synced = 1;
-		}
-
-		/* Gather a packet, however many reads it takes. */
-		int want = TS_PACKET - d->have;
-		int give = in_len - i;
-
-		if (give > want)
-			give = want;
-
-		memcpy(d->part + d->have, in + i, give);
-		d->have += give;
-		i       += give;
-
-		if (d->have < TS_PACKET)
-			break;                     /* the rest is in the next read */
-
-		d->have = 0;
-
-		if (d->part[0] != TS_SYNC) {
-			/* Lost alignment: hunt for it again rather than emitting
-			 * rubbish the decoder would choke on. */
-			d->synced = 0;
-			continue;
-		}
-
-		wrote += packet(d, d->part, out + wrote, out_max - wrote, wrote);
-
-		/*
-		 * Stop before the output could overflow.
-		 *
-		 * Anything still in `in` is lost when this returns, since the
-		 * caller reads afresh next time. That is why the contract says
-		 * out_max must be at least in_len - a transport stream is
-		 * always larger than what it carries, so an equal-sized output
-		 * buffer can never fill first. Passing a smaller one silently
-		 * discarded a large part of the stream and corrupted every
-		 * picture.
-		 */
-		if (out_max - wrote < TS_PACKET)
-			break;
-	}
-
-	return wrote;
 }

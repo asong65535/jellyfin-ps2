@@ -1,3 +1,10 @@
+/*
+ * Networking: starting the PS2's network (static, DHCP or auto), plain
+ * HTTP/1.0 requests into one shared buffer, long streams read piece by
+ * piece, fire-and-forget reports, and the timed sleep (net_snooze) every
+ * thread uses, counted in vertical blanks.
+ */
+
 #include "net.h"
 #include "config.h"
 #include "settings.h"
@@ -10,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /* 64-byte aligned: the network path DMAs into this, and an unaligned
  * destination is a classic source of dropped bytes on the EE. */
@@ -23,6 +31,10 @@ static char g_raw[HTTP_RAW_MAX] __attribute__((aligned(64)));
  */
 static char g_device[48] = "ps2-unsigned";
 
+/*
+ * Set the DeviceId every request carries: the signed-in user's own, or a
+ * placeholder before anyone signs in.
+ */
 void net_set_device_id(const char *id)
 {
 	snprintf(g_device, sizeof(g_device), "%s", (id && id[0]) ? id : "ps2-unsigned");
@@ -51,7 +63,6 @@ static unsigned g_last_port_net;      /* htons result, to prove it swapped */
 static long g_last_status;
 static int  g_last_len;               /* body bytes actually read */
 static int  g_last_expect;            /* Content-Length, -1 if absent */
-static char g_head[52], g_tail[52];
 
 /* Body bytes that arrived in the same read as the headers, for streaming. */
 /*
@@ -76,8 +87,10 @@ static int g_recv_count;
 
 static NetProgress g_progress;
 
+/* Where start-up progress lines go (the boot log). */
 void net_set_progress(NetProgress fn) { g_progress = fn; }
 
+/* The PS2's own address as text, '0.0.0.0' before the network starts. */
 const char *net_local_ip(void) { return g_local_ip; }
 
 /*
@@ -99,22 +112,30 @@ const char *net_last_info(void)
 	return buf;
 }
 
+/* The last raw HTTP response, headers included, for diagnostics. */
 const char *net_last_raw(void)     { return g_raw; }
 
+/* How many recv calls the last response took, for diagnostics. */
 int net_recv_count(void)     { return g_recv_count; }
+
+/* Bytes returned by the i-th recv of the last response, for diagnostics. */
 int net_recv_at(int i)
 {
 	return (i >= 0 && i < g_recv_count && i < RECV_LOG_MAX)
 	       ? g_recv_log[i] : 0;
 }
 
+/* Length of the last raw response. */
 int         net_last_raw_len(void) { return g_raw_used; }
 
+/* Length of the last response body. */
 int net_last_body_len(void) { return g_last_len; }
 
-const char *net_last_head(void) { return g_head; }
-const char *net_last_tail(void) { return g_tail; }
 
+/*
+ * One line about the stack for error screens: the PS2's address and the
+ * last port sent.
+ */
 const char *net_status(void)
 {
 	static char buf[64];
@@ -128,12 +149,14 @@ const char *net_status(void)
 	return buf;
 }
 
+/* Report a start-up step through the progress callback, if any. */
 static void say(const char *msg)
 {
 	if (g_progress)
 		g_progress(msg);
 }
 
+/* The same, for other modules. */
 void net_say(const char *msg) { say(msg); }
 
 /* inet_aton is not exposed by this SDK, so parse dotted quads ourselves. */
@@ -147,6 +170,11 @@ static void str_to_ip(const char *s, struct ip4_addr *out)
 	IP4_ADDR(out, a, b, c, d);
 }
 
+/*
+ * SKIP_NETWORK (config.h) builds the app with no network at all, for
+ * working on screens in an emulator: these stubs fail every request, so
+ * the app shows its error screens instead of hanging on a missing stack.
+ */
 #if SKIP_NETWORK
 
 int net_start(void) { return -100; }
@@ -185,21 +213,17 @@ int http_post(const char *host, int port, const char *path,
 /* call.                                                              */
 /* ------------------------------------------------------------------ */
 
-/*
- * Every timed wake-up delivered, from any thread. Shown on screen while
- * testing: if it stops moving, nothing that sleeps will ever wake.
- */
-static volatile int g_alarms;
-
-int net_alarms(void) { return g_alarms; }
 
 static void wake_cb(s32 alarm_id, u16 time, void *common)
 {
 	(void)alarm_id; (void)time;
-	g_alarms++;
 	iWakeupThread(*(int *)common);
 }
 
+/*
+ * Poll ready() once a second for up to 'seconds', reporting progress. 0
+ * when ready, -1 on timeout.
+ */
 static int wait_for(int (*ready)(void), int seconds, const char *label)
 {
 	char msg[64];
@@ -249,9 +273,20 @@ static int          s_ready;
 static void (*volatile g_vblank_hook)(void);
 static void (*volatile g_vblank_hook2)(void);
 
+/*
+ * Install the first vertical-blank hook (the end-of-stream watchdog in
+ * video.c).
+ */
 void net_set_vblank_hook(void (*fn)(void)) { g_vblank_hook = fn; }
+
+/* Install the second vertical-blank hook (the freeze safety net). */
 void net_add_vblank_hook(void (*fn)(void)) { g_vblank_hook2 = fn; }
 
+/*
+ * The vertical-blank interrupt handler, 60 times a second: run the two
+ * hooks, then count down every sleeping slot and wake those that are due
+ * (see net_snooze).
+ */
 static s32 vblank_cb(s32 cause)
 {
 	(void)cause;
@@ -262,16 +297,18 @@ static s32 vblank_cb(s32 cause)
 		g_vblank_hook2();
 
 	for (int i = 0; i < SNOOZE_SLOTS; i++) {
-		if (s_left[i] > 0 && --s_left[i] == 0) {
-			g_alarms++;
+		if (s_left[i] > 0 && --s_left[i] == 0)
 			iSignalSema(s_sema[i]);
-		}
 	}
 
 	ExitHandler();
 	return 0;
 }
 
+/*
+ * Create the sleep slots' semaphores and install the vertical-blank
+ * handler. Once, at start-up, before any thread sleeps.
+ */
 void net_snooze_init(void)
 {
 	if (s_ready)
@@ -360,12 +397,14 @@ void net_snooze(int ms)
 	s_used[slot] = 0;
 }
 
+/* Whether the Ethernet cable has a link. */
 static int link_is_up(void)
 {
 	return NetManIoctl(NETMAN_NETIF_IOCTL_GET_LINK_STATUS, NULL, 0, NULL, 0)
 	       == NETMAN_NETIF_ETH_LINK_STATE_UP;
 }
 
+/* Whether DHCP has an address (or is off). */
 static int dhcp_is_bound(void)
 {
 	t_ip_info info;
@@ -380,6 +419,10 @@ static int dhcp_is_bound(void)
 /* How the address was had, for the connect screen. */
 static const char *g_net_how = "";
 
+/*
+ * How the address was obtained ('static', 'from router'...), for the
+ * connect screen.
+ */
 const char *net_how(void) { return g_net_how; }
 
 /* settings.txt's static address, onto an interface already running. */
@@ -405,6 +448,7 @@ static int set_static(void)
 	return 0;
 }
 
+/* Copy the interface's address into net_local_ip's text. */
 static void record_local_ip(void)
 {
 	t_ip_info info;
@@ -542,6 +586,7 @@ static int request(const char *host, int port, const char *path,
                    const char *token, const char *extra, const char *json,
                    int *status, char **body);
 
+/* Shut the network stack down before quitting to the browser. */
 void net_stop(void)
 {
 	/* Mirrors the teardown in $PS2SDK/samples/network/tcpip-basic, so the
@@ -550,12 +595,17 @@ void net_stop(void)
 	NetManDeinit();
 }
 
+/*
+ * A plain GET into the shared response buffer. Returns 0 or a negative
+ * error; *status gets the HTTP code and *body the start of the body.
+ */
 int http_get(const char *host, int port, const char *path,
              const char *token, int *status, char **body)
 {
 	return request(host, port, path, token, NULL, NULL, status, body);
 }
 
+/* The same as a POST with a JSON body (signing in). */
 int http_post(const char *host, int port, const char *path,
               const char *token, const char *json, int *status, char **body)
 {
@@ -595,12 +645,17 @@ static int connect_to(const char *host, int port)
 	return -3;
 }
 
+/*
+ * Open a long response for streaming (video, music, subtitles): send the
+ * GET, read the headers, check for 200. Returns the socket, or negative.
+ */
 int net_stream_open(const char *host, int port, const char *path,
                     const char *token)
 {
 	return net_stream_open_wait(host, port, path, token, 1000);
 }
 
+/* net_stream_open, waiting up to wait_ms for the reply to start. */
 int net_stream_open_wait(const char *host, int port, const char *path,
                          const char *token, int wait_ms)
 {
@@ -692,6 +747,11 @@ int net_stream_open_wait(const char *host, int port, const char *path,
 	return s;
 }
 
+/*
+ * Read the next bytes of a stream: first any body bytes that arrived with
+ * the headers, then from the socket. 0 when the server closed it, negative
+ * on a timeout.
+ */
 int net_stream_read(int sock, void *buf, int len)
 {
 	/* Hand back whatever came in alongside the headers first - but only
@@ -732,6 +792,7 @@ void net_stream_set_timeout(int sock, int ms)
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
+/* Close a stream and drop any leftover header bytes that belonged to it. */
 void net_stream_close(int sock)
 {
 	/* Do not leave this stream's opening bytes for the next one. */
@@ -745,6 +806,10 @@ void net_stream_close(int sock)
 		close(sock);
 }
 
+/*
+ * A request whose reply body is not needed (reports): send, read the
+ * status line, close. Returns the HTTP status or negative.
+ */
 int net_http_send(const char *host, int port, const char *method,
                   const char *path, const char *body)
 {
@@ -790,6 +855,10 @@ int net_http_send(const char *host, int port, const char *method,
 	return atoi(line + 9);
 }
 
+/*
+ * A GET of one byte range (Range header), for fetching large replies in
+ * slices that the network stack delivers reliably.
+ */
 int http_get_range(const char *host, int port, const char *path,
                    const char *token, long start, int len,
                    char *out, int *status, long *total)
@@ -826,6 +895,66 @@ int http_get_range(const char *host, int port, const char *path,
 	return n;
 }
 
+/*
+ * The server's date, from the Date: header every Jellyfin reply carries
+ * ("Date: Thu, 15 Oct 2026 01:59:53 GMT"). The PS2's own clock is often
+ * wrong - a flat battery, or never set - and the server's is right by
+ * definition for the requests that need a date (Next Up's cutoff).
+ */
+static int g_srv_y, g_srv_m, g_srv_d;     /* 0 until a reply had one */
+
+static void note_server_date(const char *head, int len)
+{
+	static const char *mon = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+	for (int i = 0; i + 30 < len; i++) {
+		/* The header name, case-insensitively, at a line start. */
+		if (!(i == 0 || head[i - 1] == '\n'))
+			continue;
+		if (strncasecmp(head + i, "Date:", 5) != 0)
+			continue;
+
+		/* "Date: Thu, 15 Oct 2026 ..." - day, month name, year. */
+		const char *p = strchr(head + i, ',');
+
+		if (!p || p - head > len)
+			return;
+
+		int d = 0, y = 0;
+		char m[4] = "";
+
+		if (sscanf(p + 1, " %d %3s %d", &d, m, &y) != 3)
+			return;
+
+		const char *f = strstr(mon, m);
+
+		if (!f || m[0] == '\0' || y < 2000 || d < 1 || d > 31)
+			return;
+
+		g_srv_y = y;
+		g_srv_m = (int)(f - mon) / 3 + 1;
+		g_srv_d = d;
+		return;
+	}
+}
+
+int net_server_date(int *y, int *m, int *d)
+{
+	if (!g_srv_y)
+		return 0;
+
+	*y = g_srv_y;
+	*m = g_srv_m;
+	*d = g_srv_d;
+	return 1;
+}
+
+/*
+ * The one HTTP/1.0 request routine behind http_get, http_post and
+ * http_get_range: connect, send the request with the Authorization header,
+ * read the whole reply into the shared buffer, split headers from body.
+ * Not re-entrant: callers are on the screen thread.
+ */
 static int request(const char *host, int port, const char *path,
                    const char *token, const char *extra, const char *json,
                    int *status, char **body)
@@ -1010,21 +1139,12 @@ static int request(const char *host, int port, const char *path,
 	}
 
 	char *end = strstr(g_raw, "\r\n\r\n");
+
+	if (end)
+		note_server_date(g_raw, (int)(end - g_raw));
 	*body = end ? end + 4 : g_raw + used;
 
 	g_last_len = end ? (int)(used - (end + 4 - g_raw)) : 0;
-
-	/* Keep both ends of the body for the error screen. */
-	{
-		const char *b = *body;
-		int n = g_last_len;
-
-		snprintf(g_head, sizeof(g_head), "%.*s",
-		         n < 48 ? n : 48, b);
-
-		int t = n < 48 ? n : 48;
-		snprintf(g_tail, sizeof(g_tail), "%.*s", t, b + n - t);
-	}
 
 	/* Promised more than it delivered. */
 	if (g_last_expect > 0 && g_last_len < g_last_expect)

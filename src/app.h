@@ -1,3 +1,8 @@
+/*
+ * Screens and jobs: the screen ids, the Screen structure, and switching,
+ * progress, jobs and errors.
+ */
+
 #ifndef APP_H
 #define APP_H
 
@@ -17,6 +22,7 @@ typedef enum {
 	SCR_PLAYER,
 	SCR_SEARCH,
 	SCR_VIDEO,
+	SCR_USB,         /* the USB tab (work in progress) */
 	SCR_COUNT
 } ScreenId;
 
@@ -56,12 +62,10 @@ void app_run_job(JobFn fn, const char *msg);
 void app_progress(const char *msg);
 
 /* Jump to the result screen. */
-void app_ok  (const char *title, const char *body);
 void app_fail(const char *title, const char *body);
 
 /* The freeze safety net set a thread aside: stop what used it (freeze.h). */
 void app_freeze(char code);
 
-int app_result_ok(void);
 
 #endif

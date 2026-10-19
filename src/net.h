@@ -1,3 +1,7 @@
+/*
+ * Network start-up, HTTP requests, streams and timed sleep; see net.c.
+ */
+
 #ifndef NET_H
 #define NET_H
 
@@ -26,7 +30,6 @@ void net_snooze_init(void);
  */
 void net_set_vblank_hook(void (*fn)(void));
 void net_add_vblank_hook(void (*fn)(void));   /* a second, independent one */  /* once, early: sleeps count vertical blanks */
-int  net_alarms(void);       /* alarms fired so far, for diagnostics */
 
 /* Brings up the network stack. Modules are loaded separately by mods.c. */
 int net_start(void);
@@ -58,8 +61,6 @@ int         net_last_raw_len(void);
 int net_recv_count(void);
 int net_recv_at(int i);
 
-const char *net_last_head(void);
-const char *net_last_tail(void);
 
 /* One line of diagnostics for the error screen: what lwIP thinks its
  * address is, and the byte-swapped port from the last connect attempt. */
@@ -116,6 +117,12 @@ int http_post(const char *host, int port, const char *path,
 
 /* The DeviceId every request carries: the signed-in user's, see jf.c. */
 void net_set_device_id(const char *id);
+
+/*
+ * The server's date (year, month 1-12, day) from the last reply's Date:
+ * header. 1 if known, 0 before any reply carried one.
+ */
+int net_server_date(int *y, int *m, int *d);
 
 /*
  * A byte range of the same resource, using an HTTP Range header.

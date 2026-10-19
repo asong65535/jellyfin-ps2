@@ -1,5 +1,15 @@
+/*
+ * Text conversion to Latin-1, the character set the font draws: Unicode
+ * code points and UTF-8 in, with plain spellings for common characters
+ * outside it.
+ */
+
 #include "text.h"
 
+/*
+ * Write the Latin-1 spelling of Unicode code point cp to out; see text.h.
+ * Returns the bytes written.
+ */
 int text_put_cp(unsigned int cp, char *out)
 {
 	if (cp < 0x80) {
@@ -60,6 +70,10 @@ int text_put_cp(unsigned int cp, char *out)
 	return 1;
 }
 
+/*
+ * Convert UTF-8 to Latin-1 (in place is allowed); see text.h. Returns the
+ * new length.
+ */
 int text_utf8_to_latin1(const char *in, int len, char *out)
 {
 	const unsigned char *s = (const unsigned char *)in;

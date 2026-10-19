@@ -1,3 +1,7 @@
+/*
+ * Loading IOP modules; see mods.c.
+ */
+
 #ifndef MODS_H
 #define MODS_H
 

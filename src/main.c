@@ -20,6 +20,7 @@
 #include "app.h"
 #include "config.h"
 #include "settings.h"
+#include "display.h"
 #include "freeze.h"
 #include "mods.h"
 #include "net.h"
@@ -31,6 +32,7 @@
 
 static char pad_buf[256] __attribute__((aligned(64)));
 
+/* Open the first controller port with libpad. */
 static void pad_setup(void)
 {
 	padInit(0);
@@ -56,10 +58,100 @@ static u32 pad_pressed(void)
 #endif
 }
 
+/*
+ * The buttons held right now, waiting up to a second for the controller to
+ * be ready after pad_setup. For R1-at-start.
+ */
+static u32 pad_held_at_start(void)
+{
+#if SKIP_PAD
+	return 0;
+#else
+	struct padButtonStatus b;
+
+	for (int i = 0; i < 60; i++) {
+		if (padGetState(0, 0) == PAD_STATE_STABLE && padRead(0, 0, &b))
+			return 0xFFFF ^ b.btns;
+		net_snooze(16);
+	}
+	return 0;
+#endif
+}
+
+/*
+ * The display mode from settings.txt, chosen safely.
+ *
+ * The app always starts in 480i, which every TV shows. With video=480p or
+ * video=240p it then switches and asks to keep the mode: X keeps it,
+ * Circle or ten seconds without an answer go back to 480i - so a screen
+ * that cannot show the mode (480p on a 15 kHz CRT, 240p on some flat TVs)
+ * never leaves the app on a blank screen. The question comes back at every start: settings.txt is never
+ * changed by it. Holding R1 while the app starts skips all this and stays
+ * in 480i.
+ */
+static void choose_display(void)
+{
+	int id;
+
+	switch (settings.video_mode) {
+	case VIDEO_480P: id = DISPLAY_480P; break;
+	case VIDEO_240P: id = DISPLAY_240P; break;
+	case VIDEO_1080I: id = DISPLAY_1080I; break;
+	default:         return;          /* 480i: nothing to do */
+	}
+
+	if (pad_held_at_start() & PAD_R1)
+		return;                       /* the escape hatch */
+
+	ui_set_display(id);
+
+	const int frames = 10 * 60;       /* ten seconds of refreshes */
+	char title[24];
+
+	snprintf(title, sizeof(title), "Keep %s?", disp->name);
+
+	for (int f = 0; f < frames; f++) {
+		u32 p = pad_pressed();
+
+		if (p & PAD_CROSS)
+			return;                   /* keep it */
+
+		if (p & PAD_CIRCLE)
+			break;
+
+		char line[64], keep[24];
+
+		snprintf(line, sizeof(line), "Back to 480i in %d s",
+		         (frames - f + 59) / 60);
+		snprintf(keep, sizeof(keep), "Keep %s", disp->name);
+
+		ui_begin();
+		ui_waves();
+		ui_text_c(SCR_W / 2, 150, 2.0f, C_WHITE, title);
+		ui_text_c(SCR_W / 2, 220, 1.0f, C_DIM, line);
+		ui_text_c(SCR_W / 2, 250, 1.0f, C_DIM,
+		          "Hold R1 while starting to skip this.");
+		{
+			static const BtnGlyph g[] = { BTN_CROSS, BTN_CIRCLE };
+			const char *l[] = { keep, "480i" };
+
+			ui_hint_row(g, l, 2);
+		}
+		ui_end();
+	}
+
+	ui_set_display(DISPLAY_480I);
+}
+
 /* A USB keyboard types into whatever the OSK is currently bound to. */
 void osk_append(char c);
 void osk_backspace(void);
 
+/*
+ * Feed a USB keyboard, if one was found, into the on-screen keyboard's
+ * buffer: printable keys, backspace, and Enter (returned as 1 so main
+ * treats it as START).
+ */
 static int keyboard_poll(void)
 {
 	if (!mods_have_keyboard()) return 0;
@@ -104,6 +196,13 @@ static void quit_to_browser(void)
 	SleepThread();
 }
 
+/*
+ * Start-up, then the main loop. In order: SIF RPC, the vertical-blank
+ * sleep timer, the screen and font, settings.txt, the IOP reset and module
+ * loading (USB, network, sound), the controller, the screen thread's
+ * priority and the freeze safety net, then app_frame for ever. SELECT
+ * quits from anywhere.
+ */
 int main(int argc, char **argv)
 {
 
@@ -178,6 +277,9 @@ int main(int argc, char **argv)
 	freeze_register(GetThreadId(), FZ_UI);
 	freeze_init();
 #endif
+
+	/* 480p, if settings.txt asks for it and the TV shows it. */
+	choose_display();
 
 	osk_init();
 	app_init();

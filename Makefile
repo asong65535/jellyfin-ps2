@@ -1,8 +1,13 @@
-EE_BIN = jellyfin-ps2.elf
+# The version shown on the splash and exit screens. A build can set it
+# without editing this file:  make VERSION=2.0.1
+VERSION ?= 2.0.0
 
-# The version shown on the splash and exit screens. A release can set it
-# without editing this file:  make VERSION=1.0.1
-VERSION ?= 1.0.0
+# An optional development build name, in the ELF's name and under the
+# version on the splash:  make BUILD=v58  gives jellyfin-ps2-v58.elf and
+# "v2.0.0 build v58". Empty for a release: plain jellyfin-ps2.elf.
+BUILD ?=
+
+EE_BIN = jellyfin-ps2$(if $(BUILD),-$(BUILD)).elf
 
 SRC_OBJS = src/main.o   \
            src/app.o    \
@@ -19,6 +24,8 @@ SRC_OBJS = src/main.o   \
            src/net.o    \
            src/json.o   \
            src/text.o   \
+           src/display.o   \
+           src/layout.o   \
            src/freeze.o   \
            src/settings.o \
            src/subs.o   \
@@ -34,7 +41,8 @@ SRC_OBJS = src/main.o   \
            src/scr_detail.o  \
            src/scr_tracks.o  \
            src/scr_player.o  \
-           src/scr_search.o  \
+           src/scr_search.o \
+           src/scr_usb.o  \
            src/scr_video.o
 
 # This SDK ships bin2c, not bin2o, so each IRX becomes a generated .c file
@@ -80,7 +88,7 @@ EE_LIBS = -lgskit_toolkit -lgskit -ldmakit $(PNG_LIBS) \
           -lmpeg -lpacket -ldma \
           -lnetman -lps2ip -lpatches -lkbd -lpad -ldebug -lm
 
-EE_CFLAGS = -Wall -O2 -G0 -DJFPS2_VERSION=\"$(VERSION)\"
+EE_CFLAGS = -Wall -O2 -G0 -DJFPS2_VERSION=\"$(VERSION)\" -DJFPS2_BUILD=\"$(BUILD)\"
 
 BIN2C  = $(PS2SDK)/bin/bin2c
 IRXDIR = $(PS2SDK)/iop/irx

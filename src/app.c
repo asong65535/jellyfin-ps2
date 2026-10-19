@@ -1,4 +1,12 @@
+/*
+ * The screen manager. Holds the table of screens (each an enter/input/draw
+ * triple), switches between them, runs 'jobs' - blocking work such as
+ * network requests - after a frame with a busy message on screen, and
+ * shows the result/error screen.
+ */
+
 #include "app.h"
+#include "config.h"
 #include "audio.h"
 #include "freeze.h"
 #include "screens.h"
@@ -32,6 +40,10 @@ static void busy_draw(void)
 	ui_text_c(SCR_W / 2, 176, 2.0f, C_WHITE, g_msg);
 }
 
+/*
+ * Result screen input. X goes back to the connect screen; START retries:
+ * on success it continues to the user page, on failure it connects again.
+ */
 static void result_input(u32 p)
 {
 	if (p & PAD_CROSS)
@@ -43,6 +55,10 @@ static void result_input(u32 p)
 	}
 }
 
+/*
+ * Result screen: a green or red title, the explanation wrapped below it,
+ * and the button hints for Back / Retry or Browse library.
+ */
 static void result_draw(void)
 {
 	ui_waves();
@@ -83,8 +99,14 @@ static const Screen *g_screens[SCR_COUNT] = {
 	[SCR_PLAYER]  = &scr_player,
 	[SCR_SEARCH]  = &scr_search,
 	[SCR_VIDEO]   = &scr_video,
+	[SCR_USB]     = &scr_usb,
 };
 
+/*
+ * Switch to another screen and run its enter() hook. Every screen change
+ * disarms the freeze safety net (freeze.h); only the video screen arms it
+ * again, and only while playing.
+ */
 void app_goto(ScreenId id)
 {
 	freeze_arm(0);                 /* the video screen re-arms itself */
@@ -93,6 +115,11 @@ void app_goto(ScreenId id)
 		g_screens[id]->enter();
 }
 
+/*
+ * Draw one 'busy' frame at once with msg - the brand, the waves and a line
+ * of text - for jobs that run several steps on the screen thread and want
+ * to show which step they are on.
+ */
 void app_progress(const char *msg)
 {
 	snprintf(g_msg, sizeof(g_msg), "%s", msg);
@@ -102,6 +129,11 @@ void app_progress(const char *msg)
 	ui_end();
 }
 
+/*
+ * Queue fn to run on the screen thread after the current frame, with msg
+ * on the busy screen meanwhile. Jobs block the screen thread on purpose
+ * (network requests, artwork), so the freeze safety net is disarmed first.
+ */
 void app_run_job(JobFn fn, const char *msg)
 {
 	freeze_arm(0);                 /* jobs block the screen on purpose */
@@ -110,6 +142,10 @@ void app_run_job(JobFn fn, const char *msg)
 	g_screen = SCR_BUSY;      /* no enter hook, so no recursion risk */
 }
 
+/*
+ * Fill the result screen (ok selects green or red) and switch to it. Used
+ * by app_fail.
+ */
 static void set_result(int ok, const char *title, const char *body)
 {
 	g_res_ok = ok;
@@ -118,10 +154,12 @@ static void set_result(int ok, const char *title, const char *body)
 	g_screen = SCR_RESULT;
 }
 
-void app_ok  (const char *t, const char *b) { set_result(1, t, b); }
+/*
+ * Show the error screen with a title and an explanation. The way every job
+ * reports a failure.
+ */
 void app_fail(const char *t, const char *b) { set_result(0, t, b); }
 
-int app_result_ok(void) { return g_res_ok; }
 
 /*
  * Always the connect screen first: nothing is usable until the server is
@@ -132,9 +170,34 @@ void app_init(void)
 	app_goto(SCR_CONNECT);
 }
 
+/*
+ * One frame of the application, called by main's loop: the current
+ * screen's input, then its draw, then any job queued with app_run_job
+ * (after the frame is on screen, so the busy message is visible while the
+ * job blocks).
+ */
 void app_frame(u32 pressed)
 {
 	const Screen *s = g_screens[g_screen];
+
+#if DEBUG_UI
+	/*
+	 * The geometry test pattern (ui.h), development builds only: R2 shows
+	 * and hides it on any screen but video and the busy screen; while it
+	 * shows, only R2 does anything.
+	 */
+	static int geometry;
+
+	if ((pressed & PAD_R2) && g_screen != SCR_VIDEO && g_screen != SCR_BUSY)
+		geometry = !geometry;
+
+	if (geometry && g_screen != SCR_VIDEO) {
+		ui_begin();
+		ui_geometry_pattern();
+		ui_end();
+		return;
+	}
+#endif
 
 	if (s->input)
 		s->input(pressed);

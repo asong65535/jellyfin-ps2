@@ -1,3 +1,8 @@
+/*
+ * An album's tracks or a season's episodes, as a list beside the cover and
+ * description.
+ */
+
 #include "screens.h"
 #include "ui.h"
 #include "app.h"
@@ -53,6 +58,7 @@ static int desc_lines(void)
 }
 
 
+/* Fresh state for a newly opened album or season. */
 void scr_tracks_reset(void)
 {
 	g_sel      = 0;
@@ -60,8 +66,8 @@ void scr_tracks_reset(void)
 	g_desc_top = 0;
 }
 
-int scr_tracks_selected(void) { return g_sel; }
 
+/* Keep the selection inside the list. */
 static void enter(void)
 {
 	if (g_sel >= jf_track_count)
@@ -85,6 +91,10 @@ static void job_episode_detail(void)
 	app_goto(SCR_DETAIL);
 }
 
+/*
+ * Up/Down choose, L1/R1 page, X plays (music) or opens the episode page,
+ * L2/R2 scroll the description, Circle goes back.
+ */
 static void input(u32 p)
 {
 	/*
@@ -134,6 +144,10 @@ static void input(u32 p)
 		app_goto(SCR_BROWSE);
 }
 
+/*
+ * An album's tracks or a season's episodes: cover, title, description and
+ * the list.
+ */
 static void draw(void)
 {
 	ui_waves();

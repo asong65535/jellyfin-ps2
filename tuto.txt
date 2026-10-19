@@ -71,10 +71,30 @@ gateway
     is right for a direct cable.
 
 video
-    480i or 480p. Default: 480i.
-    480p is not used yet. When it is, the app will always start in
-    480i and ask you to confirm 480p, so you can never get stuck with a
-    black screen.
+    480i, 480p, 240p or 1080i. Default: 480i.
+    480p is sharper and does not flicker, but needs the PS2's
+    component output - a YPbPr cable (green, blue, red plugs), or RGB
+    with sync on green, depending on the cable and the console's video
+    output setting - and a TV or monitor that accepts 480p on it.
+    The app always starts in 480i, then switches and asks "Keep 480p?":
+    press X to keep it. If you press nothing for 10 seconds (or Circle),
+    it goes back to 480i by itself, so a screen that cannot show 480p
+    never leaves you stuck. The question comes back at every start.
+    Holding R1 while the app starts skips it and stays in 480i.
+
+    240p sends the same 240 lines on every refresh, like classic
+    consoles: no flicker and visible scanlines, at half the detail of
+    480i. The menus look the same as in 480i, drawn on half the lines,
+    and films are asked from the server at the size the screen
+    shows (320 pixels wide), so they start and seek faster. It suits
+    15 kHz CRTs and upscalers (OSSC, RetroTINK); some modern TVs do not
+    accept 240p. It asks "Keep 240p?" at start-up, exactly like 480p.
+
+    1080i is for HD TVs and HD CRTs with a component input (YPbPr; some
+    also accept RGB with sync on green). The screen is 16:9: widescreen
+    films fill it, 4:3 films get bars on the sides. The menus use the
+    whole width: 5 posters per row on HOME, 10 per page in the library.
+    It asks "Keep 1080i?" at start-up, like 480p.
 
 4. EXAMPLES
 -----------

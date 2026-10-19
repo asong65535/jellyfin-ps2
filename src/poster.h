@@ -1,3 +1,7 @@
+/*
+ * Artwork slots in VRAM; see poster.c.
+ */
+
 #ifndef POSTER_H_INCLUDED
 #define POSTER_H_INCLUDED
 
@@ -8,7 +12,7 @@
  * Poster artwork.
  *
  * VRAM is allocated once at startup and reused for the life of the program:
- * six slots for the grid and one larger slot for the detail page. gsKit's
+ * a page's worth of slots for the grid and one for the detail page. gsKit's
  * allocator has no reliable free, so allocating per page would fragment
  * VRAM into uselessness within a few page turns.
  *
@@ -16,8 +20,15 @@
  * baseline-only decoder, and Jellyfin serves baseline JPEG.
  */
 
-#define POSTER_SLOTS 6
-#define DETAIL_SLOT  POSTER_SLOTS      /* the seventh, larger slot */
+/*
+ * How many grid slots: one library page, so 6, or 10 in the wide layout
+ * (v56). Only that many are given VRAM; storage is sized for the most.
+ * The detail slot keeps a fixed index after the largest set.
+ */
+#define POSTER_SLOTS_MAX 10
+#define POSTER_SLOTS     (lay->grid_cols * 2)
+#define DETAIL_SLOT      POSTER_SLOTS_MAX   /* the larger slot, after them */
+#define SLOT_COUNT       (POSTER_SLOTS_MAX + 1)
 
 void poster_init(GSGLOBAL *gs);
 
@@ -36,6 +47,9 @@ void poster_reset(void);
  */
 void poster_release(GSGLOBAL *gs);
 void poster_reinit(GSGLOBAL *gs);
+
+/* After a display mode change: the slots again, after the new framebuffers. */
+void poster_rebuild(GSGLOBAL *gs);
 
 /* Forget one slot, so a failed load shows a placeholder rather than a
  * leftover image. */
