@@ -69,6 +69,10 @@ drivers after its IOP reset and mounts only the launch partition at `pfs0:`.
 It shares DEV9 with Ethernet and unmounts its partition before returning
 to the browser.
 
+HDD boots omit the USB mass-storage drivers to leave IOP memory for ATA/PFS.
+USB keyboards remain supported. USB boots retain their normal storage stack;
+the development-only `mass:/test.bin` video source is unavailable on HDD boots.
+
 Supported launch paths include:
 
 ```

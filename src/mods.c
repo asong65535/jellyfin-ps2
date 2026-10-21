@@ -150,9 +150,14 @@ void mods_load(ModsProgress progress)
 
 	/* USB: the keyboard and mass storage both sit on top of usbd. */
 	load("usbd",    usbd_irx,        size_usbd_irx);
-	load("bdm",     bdm_irx,         size_bdm_irx);
-	load("fatfs",   bdmfs_fatfs_irx, size_bdmfs_fatfs_irx);
-	load("usbmass", usbmass_bd_irx,  size_usbmass_bd_irx);
+	/* HDD boots need PFS instead of USB storage. Keeping both stacks resident
+	 * exhausted IOP memory while staging the HDD IRX (load=-400). USBD stays
+	 * available for the keyboard, independent of the storage source. */
+	if (!hdd_requested()) {
+		load("bdm",     bdm_irx,         size_bdm_irx);
+		load("fatfs",   bdmfs_fatfs_irx, size_bdmfs_fatfs_irx);
+		load("usbmass", usbmass_bd_irx,  size_usbmass_bd_irx);
+	}
 
 	/* Sound. audsrv sits on top of libsd, so the order matters. */
 	load("libsd",  libsd_irx,  size_libsd_irx);
