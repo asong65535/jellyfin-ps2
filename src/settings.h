@@ -67,7 +67,7 @@ extern Settings settings;
 void settings_load(int argc, char **argv);
 
 /* Complete an HDD settings read after mods_load; no-op for other boots. */
-void settings_load_hdd(void);
+void settings_load_hdd(void (*progress)(const char *));
 
 /* Where the file is, and whether it was there. */
 const char *settings_path(void);

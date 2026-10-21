@@ -700,7 +700,9 @@
  * something hangs, because the last line on screen names the call that
  * blocked.
  */
+#ifndef DEBUG_BOOT_LOG
 #define DEBUG_BOOT_LOG 0
+#endif
 
 /*
  * Show the network layer's internal chatter: "net: connect", "refetching in

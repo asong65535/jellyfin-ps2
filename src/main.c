@@ -227,13 +227,13 @@ int main(int argc, char **argv)
 	 * Every step names itself before it runs, so a freeze tells you which
 	 * call blocked. Ugly, and exactly what you want when it breaks.
 	 */
-	settings_load(argc, argv);
 	ui_boot("read settings.txt");
+	settings_load(argc, argv);
 
 	mods_load(ui_boot);
 	if (hdd_requested())
 		ui_boot("read HDD settings.txt");
-	settings_load_hdd();
+	settings_load_hdd(ui_boot);
 	jf_init();
 
 #if !SKIP_PAD
@@ -253,7 +253,7 @@ int main(int argc, char **argv)
 	settings_load(argc, argv);
 
 	mods_load(NULL);
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	jf_init();
 
 #if !SKIP_PAD

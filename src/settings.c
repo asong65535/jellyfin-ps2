@@ -292,15 +292,19 @@ void settings_load(int argc, char **argv)
 }
 
 /* Called once after mods_load, which replaces the launcher's IOP services. */
-void settings_load_hdd(void)
+void settings_load_hdd(void (*progress)(const char *))
 {
 	if (!hdd_requested() || !g_path[0])
 		return;
-	if (hdd_mount(mods_have_hdd()) < 0) {
+	if (hdd_mount(mods_have_hdd(), progress) < 0) {
 		note("%s", hdd_notice());
 		return;
 	}
+	if (progress)
+		progress("HDD: reading settings.txt (or settings.bak)");
 	load_text();
+	if (progress)
+		progress("HDD: settings read complete");
 }
 
 static void load_text(void)

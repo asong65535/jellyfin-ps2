@@ -122,8 +122,11 @@ void mods_load(ModsProgress progress)
 
 	say("sif services");
 	sceSifInitRpc(0);
+	say("binding loadfile");
 	SifLoadFileInit();
+	say("binding IOP heap");
 	SifInitIopHeap();
+	say("patching module loader");
 	sbv_patch_enable_lmb();
 
 	/* Load the extended file manager before drivers register their devices. */
@@ -152,10 +155,12 @@ void mods_load(ModsProgress progress)
 	load("libsd",  libsd_irx,  size_libsd_irx);
 	load("audsrv", audsrv_irx, size_audsrv_irx);
 
-	if (load("ps2kbd", ps2kbd_irx, size_ps2kbd_irx) >= 0 &&
-	    PS2KbdInit() >= 0) {
-		PS2KbdSetReadmode(PS2KBD_READMODE_NORMAL);
-		g_kbd = 1;
+	if (load("ps2kbd", ps2kbd_irx, size_ps2kbd_irx) >= 0) {
+		say("binding keyboard");
+		if (PS2KbdInit() >= 0) {
+			PS2KbdSetReadmode(PS2KBD_READMODE_NORMAL);
+			g_kbd = 1;
+		}
 	}
 
 	/* One DEV9 instance serves both ATA and Ethernet, even without networking. */

@@ -92,6 +92,11 @@ EE_LIBS = -lgskit_toolkit -lgskit -ldmakit $(PNG_LIBS) \
 
 EE_CFLAGS = -Wall -O2 -G0 -DJFPS2_VERSION=\"$(VERSION)\" -DJFPS2_BUILD=\"$(BUILD)\"
 
+# Override the existing boot log switch without changing release defaults.
+ifneq ($(DEBUG_BOOT_LOG),)
+EE_CFLAGS += -DDEBUG_BOOT_LOG=$(DEBUG_BOOT_LOG)
+endif
+
 BIN2C  = $(PS2SDK)/bin/bin2c
 IRXDIR = $(PS2SDK)/iop/irx
 

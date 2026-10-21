@@ -82,7 +82,7 @@ invalid:
 	snprintf(g_notice, sizeof(g_notice), "Unsupported or too long HDD boot path");
 }
 
-int hdd_mount(int modules_ready)
+int hdd_mount(int modules_ready, void (*progress)(const char *))
 {
 	if (!g_requested || g_notice[0])
 		return -1;
@@ -94,15 +94,24 @@ int hdd_mount(int modules_ready)
 	}
 
 	/* Never bind after a known server startup failure: FileXio retries forever. */
+	if (progress)
+		progress("HDD: binding FileXio");
 	int rc = fileXioInit();
 	if (rc < 0) {
 		snprintf(g_notice, sizeof(g_notice), "HDD FileXio init failed (%d)", rc);
 		return -1;
 	}
+	if (progress)
+		progress("HDD: checking disk status");
 	rc = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
 	if (rc != 0) {
 		snprintf(g_notice, sizeof(g_notice), "HDD status %d (need APA disk, status 0)", rc);
 		return -1;
+	}
+	if (progress) {
+		char msg[80];
+		snprintf(msg, sizeof(msg), "HDD: mounting %s", g_partition);
+		progress(msg);
 	}
 	rc = fileXioMount("pfs0:", g_partition, FIO_MT_RDONLY);
 	if (rc < 0) {

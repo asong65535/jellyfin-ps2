@@ -12,20 +12,37 @@ static int init_calls, mount_calls, unmount_calls;
 static int init_result, disk_status, mount_result, unmount_result;
 static int modules_ready = 1;
 static char partition[64];
+static int check_progress;
+static char last_step[128];
+
+static void progress(const char *msg)
+{
+	snprintf(last_step, sizeof(last_step), "%s", msg);
+}
 
 int mods_have_hdd(void) { return modules_ready; }
 void net_snooze(int ms) { (void)ms; }
-int fileXioInit(void) { init_calls++; return init_result; }
+int fileXioInit(void)
+{
+	if (check_progress)
+		assert(strcmp(last_step, "HDD: binding FileXio") == 0);
+	init_calls++;
+	return init_result;
+}
 int fileXioDevctl(const char *dev, int cmd, void *arg, unsigned int arglen,
                   void *buf, unsigned int buflen)
 {
 	assert(strcmp(dev, "hdd0:") == 0 && cmd == 0x4807);
 	assert(!arg && !arglen && !buf && !buflen);
+	if (check_progress)
+		assert(strcmp(last_step, "HDD: checking disk status") == 0);
 	return disk_status;
 }
 int fileXioMount(const char *target, const char *source, int flags)
 {
 	assert(strcmp(target, "pfs0:") == 0 && flags == 1);
+	if (check_progress)
+		assert(strcmp(last_step, "HDD: mounting hdd0:__common") == 0);
 	snprintf(partition, sizeof(partition), "%s", source);
 	mount_calls++;
 	return mount_result;
@@ -64,7 +81,7 @@ int main(void)
 		hdd_prepare(valid[i]);
 		assert(hdd_requested() && !hdd_notice()[0]);
 		assert(strcmp(hdd_boot_path(), "pfs0:/APPS/JF/a.elf") == 0);
-		assert(hdd_mount(1) == 0);
+		assert(hdd_mount(1, NULL) == 0);
 		assert(strcmp(partition, "hdd0:__common") == 0);
 		hdd_close();
 	}
@@ -79,7 +96,7 @@ int main(void)
 	for (unsigned int i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
 		hdd_prepare(invalid[i]);
 		assert(hdd_requested() && hdd_notice()[0] && !hdd_boot_path()[0]);
-		assert(hdd_mount(1) < 0);
+		assert(hdd_mount(1, NULL) < 0);
 	}
 	assert(init_calls == before);
 	char long_path[600];
@@ -92,30 +109,30 @@ int main(void)
 	assert(!hdd_notice()[0]);
 
 	hdd_prepare(valid[0]);
-	assert(hdd_mount(0) < 0 && init_calls == before);
+	assert(hdd_mount(0, NULL) < 0 && init_calls == before);
 	hdd_prepare(valid[0]);
 	init_result = -7;
-	assert(hdd_mount(1) < 0 && strstr(hdd_notice(), "init failed (-7)"));
+	assert(hdd_mount(1, NULL) < 0 && strstr(hdd_notice(), "init failed (-7)"));
 	init_result = 0;
 	for (disk_status = -1; disk_status <= 3; disk_status++) {
 		if (disk_status == 0) continue;
 		hdd_prepare(valid[0]);
 		before = mount_calls;
-		assert(hdd_mount(1) < 0 && mount_calls == before);
+		assert(hdd_mount(1, NULL) < 0 && mount_calls == before);
 		assert(strstr(hdd_notice(), "HDD status"));
 	}
 	disk_status = 0;
 	hdd_prepare(valid[0]);
 	mount_result = -2;
-	assert(hdd_mount(1) < 0 && strstr(hdd_notice(), "mount hdd0:__common failed (-2)"));
+	assert(hdd_mount(1, NULL) < 0 && strstr(hdd_notice(), "mount hdd0:__common failed (-2)"));
 	before = unmount_calls;
 	hdd_close();
 	assert(unmount_calls == before);
 	mount_result = 0;
 	hdd_prepare(valid[0]);
-	assert(hdd_mount(1) == 0);
+	assert(hdd_mount(1, NULL) == 0);
 	before = mount_calls;
-	assert(hdd_mount(1) == 0 && mount_calls == before);
+	assert(hdd_mount(1, NULL) == 0 && mount_calls == before);
 	unmount_result = -16;
 	hdd_close();
 	assert(strstr(hdd_notice(), "unmount failed (-16)"));
@@ -124,6 +141,11 @@ int main(void)
 	before = unmount_calls;
 	hdd_close();
 	assert(unmount_calls == before);
+	hdd_prepare(valid[0]);
+	check_progress = 1;
+	assert(hdd_mount(1, progress) == 0);
+	hdd_close();
+	check_progress = 0;
 
 	assert(mkdir("pfs0:", 0700) == 0);
 	assert(mkdir("pfs0:/APPS", 0700) == 0);
@@ -132,7 +154,10 @@ int main(void)
 	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
 	assert(!settings_found() && !settings.server[0]); /* Read waits for modules. */
 	assert(strcmp(settings_path(), "pfs0:/APPS/JF/settings.txt") == 0);
-	settings_load_hdd();
+	check_progress = 1;
+	settings_load_hdd(progress);
+	check_progress = 0;
+	assert(strcmp(last_step, "HDD: settings read complete") == 0);
 	assert(settings_found() && !settings_notice()[0]);
 	assert(strcmp(settings.server, "192.168.1.2:8096") == 0);
 	assert(settings.network == NET_STATIC && settings.video_mode == VIDEO_480P);
@@ -143,33 +168,33 @@ int main(void)
 	assert(unlink("pfs0:/APPS/JF/settings.txt") == 0);
 	put("pfs0:/APPS/JF/settings.bak", "server=backup:8096\n");
 	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(settings_found() && strcmp(settings.server, "backup:8096") == 0);
 	assert(strstr(settings_notice(), "settings.bak"));
 	assert(access("pfs0:/APPS/JF/settings.txt", F_OK) < 0);
 	assert(unlink("pfs0:/APPS/JF/settings.bak") == 0);
 	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(!settings_found() && strstr(settings_notice(), "is missing"));
 	/* Reading a directory produces a read error rather than partial settings. */
 	assert(mkdir("pfs0:/APPS/JF/settings.txt", 0700) == 0);
 	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(!settings_found() && strstr(settings_notice(), "read/close failed"));
 	/* The ELF path can fit while the longer settings filename cannot. */
 	snprintf(long_path, sizeof(long_path), "hdd0:part:pfs:/%0270d/a", 0);
 	boot(long_path);
 	before = init_calls;
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(strstr(settings_notice(), "path is too long"));
 	assert(!settings_path()[0] && init_calls == before);
 	boot("pfs0:/APPS/JF/a.elf");
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(!settings_found() && strstr(settings_notice(), "no APA partition"));
 	modules_ready = 0;
 	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
 	before = init_calls;
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(!settings_found() && init_calls == before);
 	assert(strstr(settings_notice(), "drivers unavailable"));
 	modules_ready = 1;
@@ -183,7 +208,7 @@ int main(void)
 	assert(access("mass:/settings.txt", F_OK) == 0);
 	assert(settings_save_server("new:8096") == 0);
 	before = init_calls;
-	settings_load_hdd();
+	settings_load_hdd(NULL);
 	assert(init_calls == before);
 	boot("mass:/a.elf");
 	assert(strcmp(settings.server, "new:8096") == 0);

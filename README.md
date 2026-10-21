@@ -100,6 +100,22 @@ settings. Also check USB boot and saved sign-ins on USB.
 
 Run the host checks with `sh tests/run.sh` (requires a C compiler).
 
+If HDD startup stalls on the splash, build a diagnostic ELF:
+
+```sh
+docker compose run --rm build -c 'make -B BUILD=hdd-debug DEBUG_BOOT_LOG=1'
+```
+
+Launch `jellyfin-ps2-hdd-debug.elf` from the same HDD folder. Report the last
+step displayed, the launcher/version, and console/adapter model. Each step
+appears before the operation it names, including FileXio binding, disk-status
+checking, partition mounting, and reading settings. This build does not log
+settings contents or sign-in tokens. A successful host build cannot identify
+which hardware call stalled.
+
+`-B` rebuilds every object so an earlier build's switches cannot be reused.
+To return to a release build, use `docker compose run --rm build -c 'make -B'`.
+
 ## If something goes wrong
 
 - **The screen goes black after the splash**: the TV cannot show the mode
