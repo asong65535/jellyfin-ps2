@@ -14,6 +14,7 @@ typedef void (*ModsProgress)(const char *msg);
 void mods_load(ModsProgress progress);
 
 int mods_have_keyboard(void);
+int mods_have_hdd(void);
 
 /* "" when everything loaded, else a space-separated list of failures. */
 const char *mods_failures(void);

@@ -2,7 +2,7 @@
 
 A native Jellyfin client for the PlayStation 2. Browse your Jellyfin library,
 watch films and series, and listen to music on real PS2 hardware, launched
-from a USB stick.
+from a USB stick or an internal ATA HDD with APA/PFS.
 
 Written in C with ps2sdk and gsKit. Video is decoded by the PS2's own MPEG-2
 hardware (the IPU); Jellyfin transcodes everything into a form the console can
@@ -39,7 +39,8 @@ play.
 
 - A PS2 with network access: a slim (Ethernet built in), a fat console with
   the official Network Adaptor, or a PSX (DESR).
-- A **FAT32 USB stick**. Small and old works best: the PS2's USB 1.1 port is
+- A **FAT32 USB stick**, or an internal ATA HDD with APA/PFS partitions
+  (see HDD setup below). For USB, small and old works best: the PS2's USB 1.1 port is
   fussy, and many USB 3 sticks or sticks over 32 GB are not recognised. Use
   the front port.
 - A way to launch an ELF: uLaunchELF/wLaunchELF, FreeMcBoot, PS2BBL or OPL.
@@ -59,6 +60,45 @@ play.
 
 Give the console a couple of seconds after signing in before switching it
 off: that is when the sign-in is being saved to the stick.
+
+### Reading settings from an internal HDD
+
+An ELF launched from a standard internal ATA HDD with APA partitions and
+PFS can read `settings.txt` from its own folder. The app loads embedded HDD
+drivers after its IOP reset and mounts only the launch partition at `pfs0:`.
+It shares DEV9 with Ethernet and unmounts its partition before returning
+to the browser.
+
+Supported launch paths include:
+
+```
+hdd0:__common:pfs:/APPS/JELLYFIN/jellyfin-ps2.elf
+hdd0:/__common/APPS/JELLYFIN/jellyfin-ps2.elf
+```
+
+Both read `APPS/JELLYFIN/settings.txt` in the existing `__common` partition.
+Other existing PFS partitions work the same way. Composite paths may use
+`pfs0:` (or another numeric unit) instead of `pfs:`. Paths without a leading
+slash after `pfs:` are relative to the partition root.
+
+A bare `pfs0:/...` launch path lacks the partition name needed after reset;
+the connect screen reports this instead of guessing a partition. HDD driver,
+disk-status, mount and file-read failures also appear there, and the app
+continues with defaults. USB startup keeps its existing read-before-reset
+behavior. `IOP_RESET=1` is required for this HDD integration.
+
+HDD settings are **read-only**: edit the file externally. Server changes and
+new sign-ins last for the current session but are not saved to HDD. A readable
+`settings.bak` is used if `settings.txt` is missing or empty, without restoring
+it on disk. This does not format disks or create partitions. USB disks still
+use the USB filesystem stack; this feature covers internal ATA/APA/PFS only.
+
+Build and host-side regression checks do not validate console hardware.
+Before relying on HDD boot, check the actual launcher, missing/unreadable
+settings and partitions, exit/relaunch, and Ethernet playback alongside HDD
+settings. Also check USB boot and saved sign-ins on USB.
+
+Run the host checks with `sh tests/run.sh` (requires a C compiler).
 
 ## If something goes wrong
 

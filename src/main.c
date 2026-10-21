@@ -28,6 +28,7 @@
 #include "osk.h"
 #include "jf.h"
 #include "audio.h"
+#include "hdd.h"
 
 
 static char pad_buf[256] __attribute__((aligned(64)));
@@ -185,6 +186,7 @@ static void quit_to_browser(void)
 	audio_stop();
 	jf_reports_wait(2000);       /* a last stop report or resume point */
 	net_stop();
+	hdd_close();
 
 	SifIopReset("", 0);
 	while (!SifIopSync()) {}
@@ -226,10 +228,13 @@ int main(int argc, char **argv)
 	 * call blocked. Ugly, and exactly what you want when it breaks.
 	 */
 	settings_load(argc, argv);
-	jf_init();
 	ui_boot("read settings.txt");
 
 	mods_load(ui_boot);
+	if (hdd_requested())
+		ui_boot("read HDD settings.txt");
+	settings_load_hdd();
+	jf_init();
 
 #if !SKIP_PAD
 	ui_boot("padInit");
@@ -246,9 +251,10 @@ int main(int argc, char **argv)
 	 * after, so mass: is writable again by the time anything is saved.
 	 */
 	settings_load(argc, argv);
-	jf_init();
 
 	mods_load(NULL);
+	settings_load_hdd();
+	jf_init();
 
 #if !SKIP_PAD
 	pad_setup();

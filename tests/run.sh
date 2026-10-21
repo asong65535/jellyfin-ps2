@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+test_dir=$(mktemp -d)
+trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
+${CC:-cc} -std=c99 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
+    -I"$repo_dir/tests/stubs" -I"$repo_dir/src" \
+    "$repo_dir/tests/test_hdd_settings.c" "$repo_dir/src/hdd.c" \
+    "$repo_dir/src/settings.c" -o "$test_dir/test_hdd_settings"
+cd "$test_dir"
+./test_hdd_settings

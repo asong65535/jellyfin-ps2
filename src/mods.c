@@ -2,10 +2,12 @@
  * IOP modules. Resets the IOP, patches it to accept modules from EE
  * memory, and loads the drivers embedded in the ELF: USB storage,
  * keyboard, network and sound.
+ * HDD boots also load FileXio and ATA/APA/PFS, sharing DEV9 with Ethernet.
  */
 
 #include "mods.h"
 #include "config.h"
+#include "hdd.h"
 
 #include <kernel.h>
 #include <sifrpc.h>
@@ -25,7 +27,7 @@
  * runs on the EE side and is linked in with -lps2ip.
  */
 
-#define IRX_DECL(n) extern unsigned char n[]; extern unsigned int size_##n;
+#define IRX_DECL(n) extern unsigned char n[] __attribute__((aligned(16))); extern unsigned int size_##n;
 
 IRX_DECL(usbd_irx)
 IRX_DECL(ps2kbd_irx)
@@ -37,8 +39,14 @@ IRX_DECL(netman_irx)
 IRX_DECL(smap_irx)
 IRX_DECL(libsd_irx)
 IRX_DECL(audsrv_irx)
+IRX_DECL(iomanX_irx)
+IRX_DECL(fileXio_irx)
+IRX_DECL(ps2atad_irx)
+IRX_DECL(ps2hdd_irx)
+IRX_DECL(ps2fs_irx)
 
 static int  g_kbd = 0;
+static int  g_hdd = 0;
 static char g_failed[160] = "";
 
 static ModsProgress g_progress;
@@ -76,8 +84,12 @@ static int load(const char *name, unsigned char *buf, unsigned int size)
 	int ret = 0;
 	int id  = SifExecModuleBuffer(buf, size, 0, NULL, &ret);
 
-	if (id < 0)
+	/* MODULE_RESIDENT_END=0, MODULE_REMOVABLE_END=2; 1 is not resident. */
+	if (id < 0 || (ret != 0 && ret != 2)) {
 		note_failure(name);
+		printf("module %s: load=%d start=%d\n", name, id, ret);
+		return -1;
+	}
 
 	return id;
 }
@@ -90,6 +102,8 @@ static int load(const char *name, unsigned char *buf, unsigned int size)
 void mods_load(ModsProgress progress)
 {
 	g_progress = progress;
+	g_kbd = g_hdd = 0;
+	g_failed[0] = '\0';
 
 #if IOP_RESET
 	/*
@@ -111,6 +125,13 @@ void mods_load(ModsProgress progress)
 	SifLoadFileInit();
 	SifInitIopHeap();
 	sbv_patch_enable_lmb();
+
+	/* Load the extended file manager before drivers register their devices. */
+	int want_hdd = hdd_requested() && !hdd_notice()[0];
+	if (want_hdd) {
+		g_hdd = load("iomanX", iomanX_irx, size_iomanX_irx) >= 0 &&
+		        load("fileXio", fileXio_irx, size_fileXio_irx) >= 0;
+	}
 
 	/* Pad, from the BIOS. padInit and padPortOpen hang without these. */
 	say("rom0:SIO2MAN");
@@ -137,12 +158,26 @@ void mods_load(ModsProgress progress)
 		g_kbd = 1;
 	}
 
+	/* One DEV9 instance serves both ATA and Ethernet, even without networking. */
+	int dev9 = -1;
+#if !SKIP_NETWORK
+	dev9 = load("dev9", dev9_irx, size_dev9_irx);
+#else
+	if (want_hdd)
+		dev9 = load("dev9", dev9_irx, size_dev9_irx);
+#endif
+	if (want_hdd) {
+		g_hdd = g_hdd && dev9 >= 0 &&
+		        load("atad", ps2atad_irx, size_ps2atad_irx) >= 0 &&
+		        load("hdd", ps2hdd_irx, size_ps2hdd_irx) >= 0 &&
+		        load("pfs", ps2fs_irx, size_ps2fs_irx) >= 0;
+	}
+
 #if SKIP_NETWORK
 	say("network skipped (SKIP_NETWORK=1)");
 	note_failure("network-skipped");
 #else
-	/* Exactly the sample's set and order: DEV9, NETMAN, then SMAP. */
-	load("dev9",   dev9_irx,   size_dev9_irx);
+	/* DEV9 above, then NETMAN and SMAP as in the network sample. */
 	load("netman", netman_irx, size_netman_irx);
 	load("smap",   smap_irx,   size_smap_irx);
 #endif
@@ -156,6 +191,7 @@ void mods_load(ModsProgress progress)
 
 /* Whether a USB keyboard driver was loaded. */
 int         mods_have_keyboard(void) { return g_kbd; }
+int         mods_have_hdd(void)      { return g_hdd; }
 
 /* Space-separated names of modules that failed to load, or ''. */
 const char *mods_failures(void)      { return g_failed; }

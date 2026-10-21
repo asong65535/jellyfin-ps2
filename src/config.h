@@ -685,6 +685,8 @@
  * uLaunchELF's own USB modules die with it, which is why settings.txt is
  * read before this happens. Ours are loaded straight afterwards, so mass:
  * works again for saving the URL.
+ * Internal HDD settings instead retain the launch partition/path and read
+ * after our ATA/APA/PFS drivers load and the partition is mounted read-only.
  */
 #define IOP_RESET 1
 

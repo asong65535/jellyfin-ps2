@@ -28,6 +28,7 @@ SRC_OBJS = src/main.o   \
            src/layout.o   \
            src/freeze.o   \
            src/settings.o \
+           src/hdd.o    \
            src/subs.o   \
            src/jf.o     \
            src/osk.o    \
@@ -52,6 +53,7 @@ SRC_OBJS = src/main.o   \
 IRX_SRCS = usbd_irx.c ps2kbd_irx.c \
            bdm_irx.c bdmfs_fatfs_irx.c usbmass_bd_irx.c \
            dev9_irx.c netman_irx.c smap_irx.c \
+           iomanX_irx.c fileXio_irx.c ps2atad_irx.c ps2hdd_irx.c ps2fs_irx.c \
            libsd_irx.c audsrv_irx.c
 
 IRX_OBJS = $(IRX_SRCS:.c=.o)
@@ -86,7 +88,7 @@ endif
 EE_LIBS = -lgskit_toolkit -lgskit -ldmakit $(PNG_LIBS) \
           -lturbojpeg -ljpeg -laudsrv -lmad \
           -lmpeg -lpacket -ldma \
-          -lnetman -lps2ip -lpatches -lkbd -lpad -ldebug -lm
+          -lnetman -lps2ip -lfileXio -lpatches -lkbd -lpad -ldebug -lm
 
 EE_CFLAGS = -Wall -O2 -G0 -DJFPS2_VERSION=\"$(VERSION)\" -DJFPS2_BUILD=\"$(BUILD)\"
 
@@ -160,6 +162,10 @@ libsd_irx.c: $(IRX_LIBSD)
 	$(BIN2C) $< $@ libsd_irx
 audsrv_irx.c: $(IRX_AUDSRV)
 	$(BIN2C) $< $@ audsrv_irx
+
+# Optional internal ATA/APA/PFS access; DEV9 is shared with networking.
+iomanX_irx.c fileXio_irx.c ps2atad_irx.c ps2hdd_irx.c ps2fs_irx.c: %_irx.c: $(IRXDIR)/%.irx
+	$(BIN2C) $< $@ $*_irx
 
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal

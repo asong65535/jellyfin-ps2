@@ -2,13 +2,17 @@
  * settings.txt beside the ELF: reading it (server, network, video, signed-
  * in users) and saving changes safely on the PS2's USB driver - update in
  * place, a settings.bak backup, and a read-back check.
+ * Internal HDD settings are mounted and read after reset, without writes.
  */
 
 #include "settings.h"
 #include "config.h"
 #include "net.h"       /* net_snooze, to let writes land */
+#include "hdd.h"
+#include "mods.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,7 +54,9 @@ static void note(const char *fmt, const char *a)
 static void beside_elf(char *out, int max, int argc, char **argv,
                        const char *name)
 {
-	const char *base = (argc > 0 && argv[0]) ? argv[0] : "";
+	const char *base = (argc > 0 && argv && argv[0]) ? argv[0] : "";
+	if (hdd_requested() && hdd_boot_path()[0])
+		base = hdd_boot_path();
 	int cut = -1;
 
 	for (int i = 0; base[i]; i++)
@@ -63,6 +69,11 @@ static void beside_elf(char *out, int max, int argc, char **argv,
 	}
 
 	int n = cut + 1;
+
+	if (n + strlen(name) >= (unsigned int)max) {
+		out[0] = '\0';
+		return;
+	}
 
 	if (n > max - 1)
 		n = max - 1;
@@ -259,17 +270,44 @@ static void apply(const char *key, char *val, int lineno)
  * Read settings.txt beside the ELF into 'settings', restoring it from
  * settings.bak if it is empty. Called before the IOP reset, while the
  * launcher's USB driver still works.
+ * HDD boots defer the read until our drivers and mount are ready.
  */
+static void load_text(void);
+
 void settings_load(int argc, char **argv)
 {
 	defaults();
 	g_notice[0]    = '\0';
 	g_ip_from_file = 0;
+	g_found        = 0;
 
+	hdd_prepare((argc > 0 && argv && argv[0]) ? argv[0] : "");
 	beside_elf(g_path, sizeof(g_path), argc, argv, "settings.txt");
+	if (!g_path[0]) {
+		note("Settings path is too long%s", "");
+		return;
+	}
+	if (!hdd_requested())
+		load_text();
+}
 
+/* Called once after mods_load, which replaces the launcher's IOP services. */
+void settings_load_hdd(void)
+{
+	if (!hdd_requested() || !g_path[0])
+		return;
+	if (hdd_mount(mods_have_hdd()) < 0) {
+		note("%s", hdd_notice());
+		return;
+	}
+	load_text();
+}
+
+static void load_text(void)
+{
 	static char text[8192];
 	int n = read_file(g_path, text, sizeof(text));
+	int read_errno = errno;
 
 	/*
 	 * Empty or missing, but a backup from the last save is there: a save
@@ -288,7 +326,9 @@ void settings_load(int argc, char **argv)
 		if (b > 0) {
 			n = b;
 
-			if (write_file(g_path, text, n) == 0)
+			if (hdd_requested())
+				note("HDD settings.txt unavailable; using settings.bak (read-only)%s", "");
+			else if (write_file(g_path, text, n) == 0)
 				snprintf(g_notice, sizeof(g_notice),
 				         "settings.txt was empty: restored from settings.bak");
 		}
@@ -296,8 +336,19 @@ void settings_load(int argc, char **argv)
 
 	g_found = (n >= 0);
 
-	if (n <= 0)
+	if (n <= 0) {
+		if (hdd_requested()) {
+			if (n == 0)
+				note("HDD settings.txt is empty%s", "");
+			else if (n == -1 && read_errno == ENOENT)
+				note("HDD settings.txt is missing; no readable backup%s", "");
+			else
+				snprintf(g_notice, sizeof(g_notice),
+				         "HDD settings.txt %s failed (errno %d); no readable backup",
+				         n == -2 ? "read/close" : "open", read_errno);
+		}
 		return;
+	}
 
 	text[n] = '\0';
 
@@ -426,6 +477,7 @@ static void backup_path(char *out, int max)
  */
 static int read_file(const char *path, char *buf, int max)
 {
+	buf[0] = '\0';
 	FILE *f = fopen(path, "r");
 
 	if (!f)
@@ -443,7 +495,17 @@ static int read_file(const char *path, char *buf, int max)
 			break;
 	}
 
-	fclose(f);
+	int failed = ferror(f);
+	int saved_errno = errno;
+	if (fclose(f) != 0) {
+		failed = 1;
+		saved_errno = errno;
+	}
+	if (failed) {
+		buf[0] = '\0';
+		errno = saved_errno ? saved_errno : EIO;
+		return -2;
+	}
 	buf[n] = '\0';
 	return n;
 }
@@ -528,6 +590,12 @@ static int write_file(const char *path, const char *data, int len)
  */
 static int rewrite(const char *key, const char *who, const char *line)
 {
+	/* This feature mounts HDD settings read-only, including backup recovery. */
+	if (hdd_requested() || !g_path[0]) {
+		note("Settings are read-only; changes are not saved%s", "");
+		return -1;
+	}
+
 	static char old[8192];
 	static char out[8192];
 	int klen = strlen(key);

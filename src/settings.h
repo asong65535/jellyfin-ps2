@@ -62,8 +62,12 @@ extern Settings settings;
 /*
  * Read settings.txt. Before mods_load: the IOP reset in
  * there takes the launcher's USB drivers with it until ours are loaded.
+ * HDD boots capture their partition/path here and defer reading.
  */
 void settings_load(int argc, char **argv);
+
+/* Complete an HDD settings read after mods_load; no-op for other boots. */
+void settings_load_hdd(void);
 
 /* Where the file is, and whether it was there. */
 const char *settings_path(void);
@@ -76,6 +80,7 @@ const char *settings_notice(void);
  * Write server= into the file - replacing the line, or adding one - and
  * leave every other line as it was, comments included. Creates the file
  * if there is none. 0 on success.
+ * HDD settings are read-only; save operations return failure without writing.
  */
 int settings_save_server(const char *server);
 
