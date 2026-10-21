@@ -119,8 +119,10 @@ IRX_AUDSRV = $(IRXDIR)/audsrv.irx
 all: gen_font gen_logo $(EE_BIN)
 
 # Isolated filesystem probe: the same plain IRXs, without app/USB/audio/network.
-HDD_PROBE_BIN = jellyfin-ps2-hdd-probe.elf
-HDD_PROBE_OBJS = tools/hdd_probe.o iomanX_irx.o fileXio_irx.o dev9_irx.o \
+HDD_PROBE_BIN = jellyfin-ps2-hdd-probe2.elf
+HDD_PROBE_OBJS = tools/hdd_probe.o tools/probe_screen.o \
+                 src/font.o src/font_data.o src/display.o src/layout.o \
+                 iomanX_irx.o fileXio_irx.o dev9_irx.o \
                  ps2atad_irx.o ps2hdd_irx.o ps2fs_irx.o
 HDD_PROBE_INPUTS = $(addprefix $(IRXDIR)/,iomanX.irx fileXio.irx ps2dev9.irx \
                    ps2atad.irx ps2hdd.irx ps2fs.irx)
@@ -133,7 +135,9 @@ hdd-probe: $(HDD_PROBE_BIN)
 
 $(HDD_PROBE_BIN): $(HDD_PROBE_OBJS)
 	$(EE_CC) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $^ $(EE_LDFLAGS) $(EXTRA_LDFLAGS) \
-	          -lfileXio -lpatches -ldebug
+	          -lgskit -ldmakit -lfileXio -lpatches -lm
+
+tools/hdd_probe.o tools/probe_screen.o: tools/probe_screen.h
 
 # Rasterise the font atlas before anything that includes it. Cheap, and it
 # means a font change never leaves a stale font_data.c behind.
@@ -153,7 +157,7 @@ src/logo.o:      gen_logo
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_SRCS) src/font_data.c src/logo_data.c \
-	      tools/font_preview.png $(HDD_PROBE_BIN) tools/hdd_probe.o \
+	      tools/font_preview.png $(HDD_PROBE_BIN) tools/hdd_probe.o tools/probe_screen.o \
 	      build/hdd-probe-irx-manifest.txt
 
 # Keep the generated sources around so make does not treat them as

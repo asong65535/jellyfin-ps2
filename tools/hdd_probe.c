@@ -3,7 +3,7 @@
 #include <fileXio_rpc.h>
 #include <hdd-ioctl.h>
 #include <io_common.h>
-#include <debug.h>
+#include "probe_screen.h"
 #include <kernel.h>
 #include <sifrpc.h>
 #include <iopcontrol.h>
@@ -51,9 +51,7 @@ static void step(int which, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(message, sizeof(message), fmt, ap);
 	va_end(ap);
-	scr_clearline(10 + which);
-	scr_setXY(0, 10 + which);
-	scr_printf("%02d %s", which + 1, message);
+	probe_screen_printf(10 + which, "%02d %s", which + 1, message);
 }
 
 static int load_irx(int which, unsigned char *data, unsigned int size,
@@ -73,14 +71,14 @@ static int run_probe(int argc, char **argv)
 	char launch[288];
 	int launch_len = snprintf(launch, sizeof(launch), "%s",
 	                         argc > 0 && argv && argv[0] ? argv[0] : "(none)");
-	init_scr();
-	scr_setCursor(0);
-	scr_printf("Jellyfin HDD probe 1 - " __DATE__ " " __TIME__ "\n");
-	scr_printf("Target: %s\nFile: %s\n", partition, file_path);
-	scr_printf("argc=%d argv[0]%s:\n", argc,
+	probe_screen_init();
+	probe_screen_printf(0, "Jellyfin HDD probe 2 (gsKit) - " __DATE__ " " __TIME__);
+	probe_screen_printf(1, "Target: %s", partition);
+	probe_screen_printf(2, "File: %s", file_path);
+	probe_screen_printf(3, "argc=%d argv[0]%s:", argc,
 	           launch_len >= (int)sizeof(launch) ? " (truncated)" : "");
 	for (unsigned int i = 0; i < strlen(launch); i += 70)
-		scr_printf("%.*s\n", 70, launch + i);
+		probe_screen_printf(4 + i / 70, "%.*s", 70, launch + i);
 	for (int i = 0; i < STEP_COUNT; i++)
 		step(i, "NOT RUN %s", labels[i]);
 
@@ -265,14 +263,12 @@ cleanup:
 	} else {
 		step(CLEANUP, "OK handles closed; owned mount/client released");
 	}
-	scr_setXY(0, 31);
 	if (failed >= 0)
-		scr_printf("FIRST FAILURE: %02d %s", failed + 1, labels[failed]);
+		probe_screen_printf(31, "FIRST FAILURE: %02d %s", failed + 1, labels[failed]);
 	else
-		scr_printf("PASS: FileXio -> APA -> PFS -> raw -> libc");
-	scr_setXY(0, 33);
-	scr_printf("Photograph this screen. Power off to leave the probe.\n");
-	scr_printf("Run this same ELF from USB, then HDD. No app services started.");
+		probe_screen_printf(31, "PASS: FileXio -> APA -> PFS -> raw -> libc");
+	probe_screen_printf(33, "Photograph this screen. Power off to leave the probe.");
+	probe_screen_printf(34, "Run this same ELF from USB, then HDD. No app services started.");
 	return failed >= 0 ? 1 : 0;
 #undef LOAD
 #undef FAIL

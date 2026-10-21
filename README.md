@@ -111,7 +111,7 @@ Run the host checks with `sh tests/run.sh` (requires a C compiler).
 For filesystem-layer diagnosis, build the isolated probe with
 `docker compose run --rm build -c 'make -B hdd-probe'`. It reads the explicit
 target `hdd0:__common` / `/APPS/JELLYFIN/settings.txt`, independently of launch
-path or settings parsing. Launch the same `jellyfin-ps2-hdd-probe.elf` from
+path or settings parsing. Launch the same `jellyfin-ps2-hdd-probe2.elf` from
 USB, then HDD, and photograph its retained checkpoint results. See
 [the probe test instructions](docs/hdd-probe-test.md) for the exact sequence,
 driver inputs and interpretation. A probe build is not console proof.

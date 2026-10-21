@@ -21,6 +21,7 @@ static int probe_fclose(FILE *);
 #undef fread
 #undef ferror
 #undef fclose
+#include "../tools/probe_screen.c"
 
 #define MODULES(X) X(iomanX) X(fileXio) X(dev9) X(ps2atad) X(ps2hdd) X(ps2fs)
 #define BUFFER(n) unsigned char n##_irx[16] __attribute__((aligned(16))); \
@@ -37,26 +38,70 @@ enum {
 static int fault, current_row, resets, loaded, bind_calls, bound, block_mode;
 static int mounted, dir_open, raw_open, enum_entries, raw_offset, libc_calls;
 static int mount_calls, raw_calls, exits, sleeps;
+static int presented, submitted, draws, frames, screen_ready;
 static char screen[40][160];
 static char transcript[16384];
-static char launch_arg[288] = "mass:/APPS/JELLYFIN/jellyfin-ps2-hdd-probe.elf";
+static char launch_arg[288] = "mass:/APPS/JELLYFIN/jellyfin-ps2-hdd-probe2.elf";
 static const char content[] = "SECRET fixture contents must never reach the screen.\n"
                               "server=192.168.1.2:8096\nnetwork=dhcp\nvideo=480i\n";
 
 static void waiting(void)
 {
+	assert(presented && !submitted);
 	assert(strncmp(screen[current_row] + 3, "WAIT", 4) == 0);
 }
-void init_scr(void) {}
-void scr_setCursor(int on) { assert(!on); }
-void scr_clearline(int y) { assert(y >= 0 && y < 40); screen[y][0] = '\0'; }
-void scr_setXY(int x, int y) { assert(x == 0 && y >= 0 && y < 40); current_row = y; }
-void scr_printf(const char *fmt, ...)
+GSGLOBAL *gsKit_init_global(void)
 {
-	va_list ap;
-	va_start(ap, fmt);
-	vsnprintf(screen[current_row], sizeof(screen[0]), fmt, ap);
-	va_end(ap);
+	static GSGLOBAL context;
+	memset(&context, 0, sizeof(context));
+	return &context;
+}
+void dmaKit_init(int a, int b, int c, int d, int e, int mask)
+{
+	assert(a == D_CTRL_RELE_OFF && b == D_CTRL_MFD_OFF && c == D_CTRL_STS_UNSPEC);
+	assert(d == D_CTRL_STD_OFF && e == D_CTRL_RCYC_8 && mask == (1 << DMA_CHANNEL_GIF));
+}
+void dmaKit_chan_init(int channel) { assert(channel == DMA_CHANNEL_GIF); }
+void gsKit_init_screen(GSGLOBAL *context)
+{
+	assert(context == gs && gs->Width == 640 && gs->Height == 480);
+	assert(gs->Mode == GS_MODE_NTSC && gs->Interlace == GS_INTERLACED);
+	assert(gs->DoubleBuffering && gs->PrimAlphaEnable && !gs->ZBuffering);
+	screen_ready = 1;
+}
+void gsKit_mode_switch(GSGLOBAL *context, int mode) { assert(context == gs && mode == GS_ONESHOT); }
+void gsKit_set_primalpha(GSGLOBAL *context, u64 alpha, int mode)
+{
+	assert(context == gs && alpha == GS_SETREG_ALPHA(0, 1, 0, 1, 0) && !mode);
+}
+void font_init(GSGLOBAL *context) { assert(context == gs && screen_ready); }
+/* Conservative maximum advance of the app's current atlas, including cell padding. */
+float font_width(float scale, const char *s) { return strlen(s) * 15 * scale; }
+void gsKit_clear(GSGLOBAL *context, u64 color)
+{
+	assert(context == gs && !submitted && color == GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
+	draws = presented = 0;
+}
+void font_draw(GSGLOBAL *context, float x, float y, float scale, u64 color, const char *s)
+{
+	(void)color;
+	assert(context == gs && !submitted && y == 8 + draws * 12);
+	assert(x >= 16 && x + font_width(scale, s) <= 624.01f);
+	assert(y >= 0 && y + 22 * scale <= 448); /* full cell, inside safe canvas */
+	assert(scale > 0 && scale <= 0.5f && strlen(s) < PROBE_SCREEN_COLS);
+	if (strcmp(screen[draws], s)) current_row = draws;
+	snprintf(screen[draws], sizeof(screen[0]), "%s", s);
+	draws++;
+}
+void gsKit_queue_exec(GSGLOBAL *context)
+{
+	assert(context == gs && !submitted && draws == PROBE_SCREEN_ROWS);
+	submitted = 1;
+}
+void gsKit_sync_flip(GSGLOBAL *context)
+{
+	assert(context == gs && submitted);
+	submitted = 0; presented = 1; frames++;
 	assert(strlen(transcript) + strlen(screen[current_row]) + 1 < sizeof(transcript));
 	strcat(transcript, screen[current_row]);
 }
@@ -198,9 +243,15 @@ static void run_case(int mode, const char *expected_failure)
 	current_row = resets = loaded = bind_calls = bound = mounted = dir_open = raw_open = 0;
 	enum_entries = raw_offset = libc_calls = mount_calls = raw_calls = exits = sleeps = 0;
 	block_mode = -1;
+	presented = submitted = draws = frames = screen_ready = 0;
 	memset(screen, 0, sizeof(screen)); transcript[0] = '\0';
 	char *argv[] = { launch_arg };
 	int rc = hdd_probe_main(1, argv);
+	assert(frames > 20 && presented && !submitted);
+	assert(strstr(screen[0], "HDD probe 2 (gsKit)"));
+	for (unsigned int i = 0; i < strlen(launch_arg); i += 70)
+		assert(strncmp(screen[4 + i / 70], launch_arg + i, 70) == 0);
+	assert(strstr(screen[33], "Photograph") && strstr(screen[34], "USB, then HDD"));
 	assert(resets == 1 && sleeps == 1 && !bound && !dir_open && !raw_open);
 	assert(!mounted || mode == UNMOUNT_FAIL);
 	assert(strstr(transcript, "SECRET") == NULL);
@@ -222,7 +273,7 @@ int main(void)
 	assert(fp && fwrite(content, 1, strlen(content), fp) == strlen(content));
 	assert(fclose(fp) == 0);
 	run_case(SUCCESS, NULL);
-	strcpy(launch_arg, "hdd0:__common:pfs0:/APPS/JELLYFIN/jellyfin-ps2-hdd-probe.elf");
+	strcpy(launch_arg, "hdd0:__common:pfs0:/APPS/JELLYFIN/jellyfin-ps2-hdd-probe2.elf");
 	run_case(SUCCESS, NULL); /* Launch path never changes the explicit target. */
 	run_case(SERVER_FAIL, "fileXio.irx");
 	run_case(BIND_FAIL, "FileXio binding");
@@ -242,6 +293,12 @@ int main(void)
 	run_case(LIBC_MISMATCH, "Libc file read");
 	run_case(LIBC_CLOSE_FAIL, "Libc file read");
 	run_case(UNMOUNT_FAIL, "Cleanup");
-	puts("Standalone HDD probe checkpoint order, failure isolation and cleanup checks passed");
+	memset(launch_arg, 'W', sizeof(launch_arg) - 1);
+	launch_arg[sizeof(launch_arg) - 1] = '\0';
+	run_case(SUCCESS, NULL); /* All five launch-path rows remain visible. */
+	/* Long rows fit horizontally; replacing one row retains earlier results. */
+	probe_screen_printf(34, "%s", "123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890");
+	assert(strlen(screen[34]) == 90 && strstr(screen[0], "probe 2"));
+	puts("Standalone HDD probe display bounds/presentation, checkpoint order, failure isolation and cleanup checks passed");
 	return 0;
 }

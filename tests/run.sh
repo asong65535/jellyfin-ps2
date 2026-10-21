@@ -12,7 +12,8 @@ ${CC:-cc} -std=c99 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
     "$repo_dir/tests/test_mods.c" "$repo_dir/src/mods.c" \
     -o "$test_dir/test_mods"
 ${CC:-cc} -std=c99 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
-    -I"$repo_dir/tests/stubs" "$repo_dir/tests/test_hdd_probe.c" \
+    -I"$repo_dir/tests/stubs" -I"$repo_dir/src" \
+    "$repo_dir/tests/test_hdd_probe.c" "$repo_dir/src/display.c" "$repo_dir/src/layout.c" \
     -o "$test_dir/test_hdd_probe"
 cd "$test_dir"
 ./test_hdd_settings

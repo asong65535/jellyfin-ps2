@@ -24,12 +24,13 @@ backup recovery, settings parsing or file creation runs in the probe.
    docker compose run --rm build -c 'make -B hdd-probe'
    ```
 
-   Outputs: `jellyfin-ps2-hdd-probe.elf` and
+   Outputs: `jellyfin-ps2-hdd-probe2.elf` and
    `build/hdd-probe-irx-manifest.txt`. `-B` rebuilds embedded objects so the
    recorded SDK-input hashes correspond to this build's inputs.
-3. Copy the ELF to USB and launch it with the actual launcher. The HDD
-   remains installed. Photograph the final screen, or the screen where it
-   hangs. Do not infer success from seeing a checkpoint's `WAIT` marker.
+3. Copy the new ELF to USB and launch it with the actual launcher. Confirm
+   the title says `Jellyfin HDD probe 2 (gsKit)`. The HDD remains installed.
+   Photograph the final screen, or the screen where it hangs. Do not infer
+   success from seeing a checkpoint's `WAIT` marker.
 4. Power off, then launch the **same ELF** from HDD using
    wLaunchELF-r3z 4.8.0. Photograph the screen again. No target-file or
    partition edits are needed between these runs.
@@ -51,6 +52,13 @@ Every operation receives a visible `WAIT` marker before it runs and an `OK`
 or `FAIL` result afterward. Rows retain their results; later startup cannot
 erase an earlier return code. The probe stops on the first failure and marks
 downstream checkpoints `NOT RUN`, then attempts cleanup.
+
+Probe 2 replaces the SDK debug-screen renderer with the application's
+gsKit/dmaKit initialization and bitmap font. It retains and redraws all rows,
+then presents each update before returning to the filesystem checks. All 35
+rows fit inside the application's overscan-safe 640x448 canvas in 480i; long
+lines shrink to fit the width. This EE display code loads no IOP services.
+The HDD initialization, driver inputs, capacities and file checks are unchanged.
 
 | Checkpoint | Successful evidence | Failure narrows the problem to |
 | --- | --- | --- |
@@ -101,13 +109,18 @@ after the checks, so the probe does not establish networking/audio coexistence.
 
 ## Evidence limits and next step
 
-Host tests exercise checkpoint ordering, failure isolation, descriptor cleanup,
-short raw reads, raw/libc comparison and hidden file contents. A successful
-host test or cross-build does not prove PS2 hardware communication.
+Host tests exercise retained display rows, screen bounds, presentation before
+blocking calls, checkpoint ordering, failure isolation, descriptor cleanup,
+short raw reads, raw/libc comparison and hidden file contents. GS/DMA and font
+boundaries are mocked: these checks do not validate hardware rendering.
+A successful host test or cross-build does not prove PS2 hardware communication.
 
 Current console evidence establishes that an earlier application build reported
 `hdd(load=-400,start=0)`. It does not establish which later filesystem layers
-work. No successful probe checkpoint has been observed on console yet.
+work. Probe 1 displayed only `Jell` on both USB and HDD launches. That is part
+of its first title, before any IOP reset or HDD call; neither run established
+a filesystem checkpoint. The exact debug-renderer failure remains unconfirmed.
+Probe 2 needs a fresh USB/HDD comparison before drawing further HDD conclusions.
 
 Once both probe launches pass, compare the proven initialization sequence
 with the application and retest at its initialization boundaries. If any
