@@ -83,11 +83,14 @@ static int load(const char *name, unsigned char *buf, unsigned int size)
 
 	int ret = 0;
 	int id  = SifExecModuleBuffer(buf, size, 0, NULL, &ret);
+	snprintf(msg, sizeof(msg), "%s returned: load=%d start=%d", name, id, ret);
+	say(msg);
 
 	/* MODULE_RESIDENT_END=0, MODULE_REMOVABLE_END=2; 1 is not resident. */
 	if (id < 0 || (ret != 0 && ret != 2)) {
-		note_failure(name);
-		printf("module %s: load=%d start=%d\n", name, id, ret);
+		/* Startup diagnostics must not depend on a working file-I/O backend. */
+		snprintf(msg, sizeof(msg), "%s(load=%d,start=%d)", name, id, ret);
+		note_failure(msg);
 		return -1;
 	}
 

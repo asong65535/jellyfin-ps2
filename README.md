@@ -113,6 +113,11 @@ checking, partition mounting, and reading settings. This build does not log
 settings contents or sign-in tokens. A successful host build cannot identify
 which hardware call stalled.
 
+If the last step is `loading pfs`, the module-load/start call has not yet
+returned. A returned call displays `pfs returned: load=... start=...` first.
+Module failures retain both return values on the connect screen without
+trying to print through a possibly unavailable file-I/O backend.
+
 `-B` rebuilds every object so an earlier build's switches cannot be reused.
 To return to a release build, use `docker compose run --rm build -c 'make -B'`.
 
