@@ -190,6 +190,7 @@ static void quit_to_browser(void)
 
 	SifIopReset("", 0);
 	while (!SifIopSync()) {}
+	hdd_iop_reset();
 	SifInitRpc(0);
 
 	LoadExecPS2("rom0:OSDSYS", 0, NULL);
@@ -222,29 +223,13 @@ int main(int argc, char **argv)
 	 * replace it a moment later. */
 	ui_splash();
 
-#if DEBUG_BOOT_LOG
+	ModsProgress progress = DEBUG_BOOT_LOG ? ui_boot : NULL;
 	/*
 	 * Every step names itself before it runs, so a freeze tells you which
 	 * call blocked. Ugly, and exactly what you want when it breaks.
 	 */
-	ui_boot("read settings.txt");
-	settings_load(argc, argv);
-
-	mods_load(ui_boot);
-	if (hdd_requested())
-		ui_boot("read HDD settings.txt");
-	settings_load_hdd(ui_boot);
-	jf_init();
-
-#if !SKIP_PAD
-	ui_boot("padInit");
-	pad_setup();
-#endif
-
-#if DEBUG_NET_LOG
-	net_set_progress(ui_boot);
-#endif
-#else
+	if (progress)
+		progress("read settings.txt");
 	/*
 	 * settings.txt is read before mods_load because the IOP reset in
 	 * there takes uLaunchELF's USB modules with it. Ours load straight
@@ -252,13 +237,22 @@ int main(int argc, char **argv)
 	 */
 	settings_load(argc, argv);
 
-	mods_load(NULL);
-	settings_load_hdd(NULL);
+	if (hdd_requested()) {
+		mods_load_hdd(progress);
+		settings_load_hdd(progress);
+	}
+	/* Reset away the temporary HDD stack before starting runtime services. */
+	mods_load(progress);
 	jf_init();
 
 #if !SKIP_PAD
+	if (progress)
+		progress("padInit");
 	pad_setup();
 #endif
+
+#if DEBUG_BOOT_LOG && DEBUG_NET_LOG
+	net_set_progress(ui_boot);
 #endif
 
 	/* Sound. Needs libsd and audsrv, which mods_load has just installed. */

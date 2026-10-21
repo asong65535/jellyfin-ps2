@@ -9,8 +9,11 @@ int hdd_requested(void);
 const char *hdd_boot_path(void);
 const char *hdd_notice(void);
 
-/* Mount only after our modules loaded. Owns one read-only pfs0: mount. */
+/* Mount after mods_load_hdd. Close before the runtime IOP reset. */
 int hdd_mount(int modules_ready, void (*progress)(const char *));
 void hdd_close(void);
+
+/* Discard RPC/mount state after an IOP reset; retain the captured boot path. */
+void hdd_iop_reset(void);
 
 #endif

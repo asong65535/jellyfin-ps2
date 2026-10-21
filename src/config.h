@@ -686,7 +686,8 @@
  * read before this happens. Ours are loaded straight afterwards, so mass:
  * works again for saving the URL.
  * Internal HDD settings instead retain the launch partition/path and read
- * after our ATA/APA/PFS drivers load and the partition is mounted read-only.
+ * in a temporary ATA/APA/PFS-only IOP with a read-only partition mount.
+ * That IOP is replaced before loading the normal USB/network/audio services.
  */
 #define IOP_RESET 1
 

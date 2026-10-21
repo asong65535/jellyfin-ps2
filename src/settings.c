@@ -291,18 +291,24 @@ void settings_load(int argc, char **argv)
 		load_text();
 }
 
-/* Called once after mods_load, which replaces the launcher's IOP services. */
+/* Read using the temporary HDD-only IOP, before runtime modules replace it. */
 void settings_load_hdd(void (*progress)(const char *))
 {
 	if (!hdd_requested() || !g_path[0])
 		return;
 	if (hdd_mount(mods_have_hdd(), progress) < 0) {
 		note("%s", hdd_notice());
+		hdd_close();
 		return;
 	}
 	if (progress)
 		progress("HDD: reading settings.txt (or settings.bak)");
 	load_text();
+	if (progress)
+		progress("HDD: closing settings mount and FileXio");
+	hdd_close();
+	if (hdd_notice()[0])
+		note("%s", hdd_notice());
 	if (progress)
 		progress("HDD: settings read complete");
 }

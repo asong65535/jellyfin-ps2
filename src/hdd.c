@@ -11,6 +11,7 @@
 
 static int g_requested;
 static int g_mounted;
+static int g_filexio;
 static char g_partition[5 + APA_IDMAX + 1];
 static char g_boot_path[288];
 static char g_notice[160];
@@ -101,6 +102,7 @@ int hdd_mount(int modules_ready, void (*progress)(const char *))
 		snprintf(g_notice, sizeof(g_notice), "HDD FileXio init failed (%d)", rc);
 		return -1;
 	}
+	g_filexio = 1;
 	if (progress)
 		progress("HDD: checking disk status");
 	rc = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
@@ -124,13 +126,26 @@ int hdd_mount(int modules_ready, void (*progress)(const char *))
 
 void hdd_close(void)
 {
-	if (!g_mounted)
-		return;
-	int rc = fileXioUmount("pfs0:");
-	if (rc < 0) {
-		snprintf(g_notice, sizeof(g_notice), "HDD unmount failed (%d)", rc);
-		printf("%s\n", g_notice);
-		return;
+	if (g_mounted) {
+		int rc = fileXioUmount("pfs0:");
+		if (rc < 0) {
+			snprintf(g_notice, sizeof(g_notice), "HDD unmount failed (%d)", rc);
+			return;
+		}
+		g_mounted = 0;
 	}
+	if (g_filexio) {
+		/* Restore libc's original backend before the FileXio server is reset. */
+		fileXioExit();
+		g_filexio = 0;
+	}
+}
+
+void hdd_iop_reset(void)
+{
+	/* A reset invalidates even a mount whose unmount previously failed. */
+	if (g_filexio)
+		fileXioExit();
+	g_filexio = 0;
 	g_mounted = 0;
 }

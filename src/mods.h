@@ -13,6 +13,9 @@ typedef void (*ModsProgress)(const char *msg);
 
 void mods_load(ModsProgress progress);
 
+/* Temporary HDD-only IOP, before reading settings and loading runtime modules. */
+void mods_load_hdd(ModsProgress progress);
+
 int mods_have_keyboard(void);
 int mods_have_hdd(void);
 

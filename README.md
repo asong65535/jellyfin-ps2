@@ -64,14 +64,18 @@ off: that is when the sign-in is being saved to the stick.
 ### Reading settings from an internal HDD
 
 An ELF launched from a standard internal ATA HDD with APA partitions and
-PFS can read `settings.txt` from its own folder. The app loads embedded HDD
-drivers after its IOP reset and mounts only the launch partition at `pfs0:`.
-It shares DEV9 with Ethernet and unmounts its partition before returning
-to the browser.
+PFS can read `settings.txt` from its own folder. Before starting controllers,
+USB, audio or networking, the app resets the IOP and loads only the embedded
+HDD drivers. It mounts the launch partition read-only at `pfs0:`, reads the
+settings, unmounts it, and releases FileXio's libc backend.
 
-HDD boots omit the USB mass-storage drivers to leave IOP memory for ATA/PFS.
-USB keyboards remain supported. USB boots retain their normal storage stack;
-the development-only `mass:/test.bin` video source is unavailable on HDD boots.
+The normal runtime IOP reset then removes all temporary HDD drivers before
+USB, keyboard, sound and Ethernet drivers load. This keeps the HDD stack out
+of the runtime memory budget and avoids competing with USB/audio allocations
+while loading HDD modules. DEV9 loads once in each IOP lifetime. USB storage
+and keyboard behavior remain available during normal operation after either
+launch source. HDD settings stay in EE memory; the runtime does not remount
+the HDD or write settings back to it.
 
 Supported launch paths include:
 
@@ -99,8 +103,8 @@ use the USB filesystem stack; this feature covers internal ATA/APA/PFS only.
 
 Build and host-side regression checks do not validate console hardware.
 Before relying on HDD boot, check the actual launcher, missing/unreadable
-settings and partitions, exit/relaunch, and Ethernet playback alongside HDD
-settings. Also check USB boot and saved sign-ins on USB.
+settings and partitions, exit/relaunch, and Ethernet playback after HDD
+settings have loaded. Also check USB boot and saved sign-ins on USB.
 
 Run the host checks with `sh tests/run.sh` (requires a C compiler).
 

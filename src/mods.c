@@ -2,7 +2,7 @@
  * IOP modules. Resets the IOP, patches it to accept modules from EE
  * memory, and loads the drivers embedded in the ELF: USB storage,
  * keyboard, network and sound.
- * HDD boots also load FileXio and ATA/APA/PFS, sharing DEV9 with Ethernet.
+ * HDD settings use a temporary IOP before the normal runtime modules load.
  */
 
 #include "mods.h"
@@ -97,16 +97,11 @@ static int load(const char *name, unsigned char *buf, unsigned int size)
 	return id;
 }
 
-/*
- * Reset the IOP, patch it so modules can be loaded from EE memory, and
- * load every module the app needs: USB (bdm, FAT, mass storage), keyboard,
- * network (dev9, netman, smap), sound (libsd, audsrv).
- */
-void mods_load(ModsProgress progress)
+/* Reset and patch the IOP before loading either settings or runtime drivers. */
+static void init_iop(ModsProgress progress)
 {
 	g_progress = progress;
 	g_kbd = g_hdd = 0;
-	g_failed[0] = '\0';
 
 #if IOP_RESET
 	/*
@@ -121,6 +116,7 @@ void mods_load(ModsProgress progress)
 	sceSifInitRpc(0);
 	while (!SifIopReset("", 0)) {}
 	while (!SifIopSync()) {}
+	hdd_iop_reset();
 #endif
 
 	say("sif services");
@@ -131,13 +127,34 @@ void mods_load(ModsProgress progress)
 	SifInitIopHeap();
 	say("patching module loader");
 	sbv_patch_enable_lmb();
+}
 
-	/* Load the extended file manager before drivers register their devices. */
-	int want_hdd = hdd_requested() && !hdd_notice()[0];
-	if (want_hdd) {
-		g_hdd = load("iomanX", iomanX_irx, size_iomanX_irx) >= 0 &&
-		        load("fileXio", fileXio_irx, size_fileXio_irx) >= 0;
-	}
+void mods_load_hdd(ModsProgress progress)
+{
+	g_failed[0] = '\0';
+	g_hdd = 0;
+	if (!hdd_requested() || hdd_notice()[0])
+		return;
+
+	/* Settings need HDD drivers only while reading. Start with a minimal IOP
+	 * so the IRX staging buffers do not compete with USB/audio allocations. */
+	init_iop(progress);
+	g_hdd = load("iomanX", iomanX_irx, size_iomanX_irx) >= 0 &&
+	        load("fileXio", fileXio_irx, size_fileXio_irx) >= 0 &&
+	        load("dev9", dev9_irx, size_dev9_irx) >= 0 &&
+	        load("atad", ps2atad_irx, size_ps2atad_irx) >= 0 &&
+	        load("hdd", ps2hdd_irx, size_ps2hdd_irx) >= 0 &&
+	        load("pfs", ps2fs_irx, size_ps2fs_irx) >= 0;
+	g_progress = NULL;
+}
+
+void mods_load(ModsProgress progress)
+{
+	/* Runtime modules: USB storage/keyboard, network and sound. */
+	/* Keep HDD bootstrap failures visible after replacing its IOP. */
+	if (!hdd_requested())
+		g_failed[0] = '\0';
+	init_iop(progress);
 
 	/* Pad, from the BIOS. padInit and padPortOpen hang without these. */
 	say("rom0:SIO2MAN");
@@ -150,14 +167,9 @@ void mods_load(ModsProgress progress)
 
 	/* USB: the keyboard and mass storage both sit on top of usbd. */
 	load("usbd",    usbd_irx,        size_usbd_irx);
-	/* HDD boots need PFS instead of USB storage. Keeping both stacks resident
-	 * exhausted IOP memory while staging the HDD IRX (load=-400). USBD stays
-	 * available for the keyboard, independent of the storage source. */
-	if (!hdd_requested()) {
-		load("bdm",     bdm_irx,         size_bdm_irx);
-		load("fatfs",   bdmfs_fatfs_irx, size_bdmfs_fatfs_irx);
-		load("usbmass", usbmass_bd_irx,  size_usbmass_bd_irx);
-	}
+	load("bdm",     bdm_irx,         size_bdm_irx);
+	load("fatfs",   bdmfs_fatfs_irx, size_bdmfs_fatfs_irx);
+	load("usbmass", usbmass_bd_irx,  size_usbmass_bd_irx);
 
 	/* Sound. audsrv sits on top of libsd, so the order matters. */
 	load("libsd",  libsd_irx,  size_libsd_irx);
@@ -171,26 +183,12 @@ void mods_load(ModsProgress progress)
 		}
 	}
 
-	/* One DEV9 instance serves both ATA and Ethernet, even without networking. */
-	int dev9 = -1;
-#if !SKIP_NETWORK
-	dev9 = load("dev9", dev9_irx, size_dev9_irx);
-#else
-	if (want_hdd)
-		dev9 = load("dev9", dev9_irx, size_dev9_irx);
-#endif
-	if (want_hdd) {
-		g_hdd = g_hdd && dev9 >= 0 &&
-		        load("atad", ps2atad_irx, size_ps2atad_irx) >= 0 &&
-		        load("hdd", ps2hdd_irx, size_ps2hdd_irx) >= 0 &&
-		        load("pfs", ps2fs_irx, size_ps2fs_irx) >= 0;
-	}
-
 #if SKIP_NETWORK
 	say("network skipped (SKIP_NETWORK=1)");
 	note_failure("network-skipped");
 #else
-	/* DEV9 above, then NETMAN and SMAP as in the network sample. */
+	/* The HDD bootstrap IOP is gone; this DEV9 instance serves Ethernet. */
+	load("dev9",   dev9_irx,   size_dev9_irx);
 	load("netman", netman_irx, size_netman_irx);
 	load("smap",   smap_irx,   size_smap_irx);
 #endif

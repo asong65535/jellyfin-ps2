@@ -14,6 +14,7 @@ static int modules_ready = 1;
 static char partition[64];
 static int check_progress;
 static char last_step[128];
+static int client_active, exit_calls;
 
 static void progress(const char *msg)
 {
@@ -27,12 +28,21 @@ int fileXioInit(void)
 	if (check_progress)
 		assert(strcmp(last_step, "HDD: binding FileXio") == 0);
 	init_calls++;
+	if (init_result >= 0)
+		client_active = 1;
 	return init_result;
+}
+void fileXioExit(void)
+{
+	assert(client_active);
+	client_active = 0;
+	exit_calls++;
 }
 int fileXioDevctl(const char *dev, int cmd, void *arg, unsigned int arglen,
                   void *buf, unsigned int buflen)
 {
 	assert(strcmp(dev, "hdd0:") == 0 && cmd == 0x4807);
+	assert(client_active);
 	assert(!arg && !arglen && !buf && !buflen);
 	if (check_progress)
 		assert(strcmp(last_step, "HDD: checking disk status") == 0);
@@ -41,6 +51,7 @@ int fileXioDevctl(const char *dev, int cmd, void *arg, unsigned int arglen,
 int fileXioMount(const char *target, const char *source, int flags)
 {
 	assert(strcmp(target, "pfs0:") == 0 && flags == 1);
+	assert(client_active);
 	if (check_progress)
 		assert(strcmp(last_step, "HDD: mounting hdd0:__common") == 0);
 	snprintf(partition, sizeof(partition), "%s", source);
@@ -50,6 +61,7 @@ int fileXioMount(const char *target, const char *source, int flags)
 int fileXioUmount(const char *target)
 {
 	assert(strcmp(target, "pfs0:") == 0);
+	assert(client_active);
 	unmount_calls++;
 	return unmount_result;
 }
@@ -84,6 +96,7 @@ int main(void)
 		assert(hdd_mount(1, NULL) == 0);
 		assert(strcmp(partition, "hdd0:__common") == 0);
 		hdd_close();
+		assert(!client_active);
 	}
 
 	const char *invalid[] = {
@@ -128,6 +141,7 @@ int main(void)
 	before = unmount_calls;
 	hdd_close();
 	assert(unmount_calls == before);
+	assert(!client_active); /* Failed mount still releases the libc backend. */
 	mount_result = 0;
 	hdd_prepare(valid[0]);
 	assert(hdd_mount(1, NULL) == 0);
@@ -136,9 +150,13 @@ int main(void)
 	unmount_result = -16;
 	hdd_close();
 	assert(strstr(hdd_notice(), "unmount failed (-16)"));
+	assert(client_active);
 	unmount_result = 0;
-	hdd_close();
+	/* Reset invalidates a busy mount without retrying RPC against a dead IOP. */
 	before = unmount_calls;
+	hdd_iop_reset();
+	assert(!client_active && hdd_requested());
+	assert(strcmp(hdd_boot_path(), "pfs0:/APPS/JF/a.elf") == 0);
 	hdd_close();
 	assert(unmount_calls == before);
 	hdd_prepare(valid[0]);
@@ -155,15 +173,39 @@ int main(void)
 	assert(!settings_found() && !settings.server[0]); /* Read waits for modules. */
 	assert(strcmp(settings_path(), "pfs0:/APPS/JF/settings.txt") == 0);
 	check_progress = 1;
+	before = exit_calls;
 	settings_load_hdd(progress);
 	check_progress = 0;
 	assert(strcmp(last_step, "HDD: settings read complete") == 0);
 	assert(settings_found() && !settings_notice()[0]);
 	assert(strcmp(settings.server, "192.168.1.2:8096") == 0);
 	assert(settings.network == NET_STATIC && settings.video_mode == VIDEO_480P);
+	assert(!client_active && exit_calls == before + 1);
+	hdd_iop_reset();
+	/* Parsed settings survive removal of all HDD RPC/mount state. */
+	assert(settings_found() && strcmp(settings.server, "192.168.1.2:8096") == 0);
 	assert(settings_save_server("other:8096") < 0);
 	assert(strstr(settings_notice(), "read-only"));
 	assert(access("pfs0:/APPS/JF/settings.bak", F_OK) < 0);
+
+	/* A failed unmount is reported; reset then discards stale RPC/mount state. */
+	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
+	unmount_result = -16;
+	settings_load_hdd(NULL);
+	assert(settings_found() && client_active);
+	assert(strstr(settings_notice(), "unmount failed (-16)"));
+	before = unmount_calls;
+	hdd_iop_reset();
+	hdd_close();
+	assert(!client_active && unmount_calls == before);
+	unmount_result = 0;
+
+	boot("hdd0:__common:pfs:/APPS/JF/a.elf");
+	mount_result = -5;
+	settings_load_hdd(NULL);
+	assert(!settings_found() && !client_active);
+	assert(strstr(settings_notice(), "mount hdd0:__common failed (-5)"));
+	mount_result = 0;
 
 	assert(unlink("pfs0:/APPS/JF/settings.txt") == 0);
 	put("pfs0:/APPS/JF/settings.bak", "server=backup:8096\n");
