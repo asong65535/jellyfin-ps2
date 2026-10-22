@@ -45,13 +45,20 @@ HTTP, PS2 sleep, and UI drawing are mocked; these are not socket or hardware tes
   across screens/errors/blocking jobs. Only HOME, library grids/letter rail,
   details, and episode/music lists repeat; other controls and screens retain
   press events. Repeated movement at track-list boundaries stays clamped.
+- All 189 supported font glyphs match independently rasterized images after
+  packing, with transparent borders and unchanged advances/line spacing.
+  This reproduced the stray dots under `w`: the diaeresis (`¨`) in the cell
+  below it extends above the font's advertised metrics and was drawn into
+  `w`'s cell. Actual glyph bounds now determine cell height; stored top padding
+  is compensated by the renderer to preserve text baselines and accents.
 
 Before the fix, the loader failed the harness's assertion that episode requests
 carry `Limit` and `StartIndex`.
 
 ## Verified on 2026-10-21
 
-Both host suites and the supported Docker PS2SDK build passed. Both suites
+All four host suites (episodes, tracks, UI input, and font atlas) and the
+supported Docker PS2SDK build passed. The episode and track suites
 also passed with AddressSanitizer and UndefinedBehaviorSanitizer on the host,
 using `jsmn.h` copied from the pinned image. The image's own sanitizer build
 could not link because its libasan has an undefined
@@ -61,7 +68,7 @@ The baseline full build warned about SDK DMA macro redefinitions and libmpeg's
 ABI/float-mode mismatch. The final incremental link retained the same libmpeg
 warnings; no new warning appeared in the changed source files.
 
-Memory checks from the final PS2 ELF:
+Memory snapshot after the pagination fix, before subsequent UI/font changes:
 
 ```text
 sizeof(JfTrack) = 168
@@ -87,6 +94,11 @@ static array; its fetch and playback logic is unchanged apart from safe
 runtime conversion shared with episodes.
 
 ## Remaining hardware checks and limits
+
+The user completed the font hardware test without issues. The atlas now uses
+15x27 cells (240x328 overall), versus 15x22 (240x264), adding 1,920 packed
+bytes and 7,680 unpacked texture bytes. The bitmap regression tests also cover
+accented capitals, descenders, advances, and transparent cell borders.
 
 The user completed the held-scrolling hardware test without issues. Host
 checks also cover the initial delay, repeat cadence, release, direction changes,

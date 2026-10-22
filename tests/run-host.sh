@@ -20,3 +20,4 @@ ${CC:-cc} -std=gnu99 -g -O1 -Wall -Wextra \
     -ffunction-sections -fdata-sections -Itests/stubs -Isrc \
     tests/app_input.c src/app.c -Wl,--gc-sections -o "$build_dir/app-input"
 "$build_dir/app-input"
+python3 tests/font_atlas.py
