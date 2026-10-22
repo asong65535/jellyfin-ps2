@@ -212,8 +212,12 @@
 #define JF_FETCH_ITEMS 6
 #define JF_MAX_USERS 8
 
-/* Tracks held for one album. Longer albums are truncated. */
-#define JF_TRACK_MAX 32
+/* Tracks or episodes held for one album or season. Longer lists are capped. */
+#define JF_TRACK_MAX 256
+
+/* Episode requests stay bounded independently of music/library browsing.
+ * Smaller pages may help unreliable networks; retries still validate JSON. */
+#define JF_FETCH_EPISODES 6
 
 #define HTTP_RAW_MAX 32768   /* whole response, headers included */
 

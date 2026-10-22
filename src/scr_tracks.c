@@ -73,7 +73,8 @@ static void enter(void)
 	if (g_sel >= jf_track_count)
 		g_sel = jf_track_count ? jf_track_count - 1 : 0;
 
-	g_top = 0;
+	if (g_top > g_sel) g_top = g_sel;
+	if (g_sel >= g_top + ROW_VIS) g_top = g_sel - ROW_VIS + 1;
 }
 
 /*
