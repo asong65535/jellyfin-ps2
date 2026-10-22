@@ -167,12 +167,14 @@ int main(void)
 		check_visible(i);
 		scr_tracks.input(PAD_DOWN);
 	}
+	for (int i = 0; i < 100; i++) scr_tracks.input(PAD_DOWN);
 	scr_tracks.input(PAD_CROSS);
 	assert(opened == 255);
 	for (int i = 255; i >= 0; i--) {
 		check_visible(i);
 		scr_tracks.input(PAD_UP);
 	}
+	for (int i = 0; i < 100; i++) scr_tracks.input(PAD_UP);
 	scr_tracks.input(PAD_CROSS);
 	assert(opened == 0);
 	jf_track_count = 0;

@@ -39,6 +39,12 @@ HTTP, PS2 sleep, and UI drawing are mocked; these are not socket or hardware tes
   and Latin-1 text), standard/wide layouts, selected/unselected rows, and music
   as well as episodes. Titles use the existing one-line wrapping helper with
   a 12-unit gap before the measured duration; source titles remain unchanged.
+- Delayed held Up/Down input through the real screen manager: immediate press,
+  350 ms initial delay, 90 ms repeat interval, release/repress, direction
+  changes, conflicting directions, slow frames, clock rollover, and resets
+  across screens/errors/blocking jobs. Only HOME, library grids/letter rail,
+  details, and episode/music lists repeat; other controls and screens retain
+  press events. Repeated movement at track-list boundaries stays clamped.
 
 Before the fix, the loader failed the harness's assertion that episode requests
 carry `Limit` and `StartIndex`.
@@ -81,6 +87,11 @@ static array; its fetch and playback logic is unchanged apart from safe
 runtime conversion shared with episodes.
 
 ## Remaining hardware checks and limits
+
+The user completed the held-scrolling hardware test without issues. Host
+checks also cover the initial delay, repeat cadence, release, direction changes,
+and clamped list ends. Controller disconnect/reconnect remains unverified on
+hardware.
 
 The user reports that their largest season, approximately 50 episodes, loaded
 on PS2 hardware without issues, and confirmed that the title/duration overlap

@@ -16,3 +16,7 @@ ${CC:-cc} -std=gnu99 -g -O1 -Wall -Wextra \
 ${CC:-cc} -std=gnu99 -g -O1 -Wall -Wextra \
     -Itests/stubs -Isrc tests/tracks.c src/scr_tracks.c -o "$build_dir/tracks"
 "$build_dir/tracks"
+${CC:-cc} -std=gnu99 -g -O1 -Wall -Wextra \
+    -ffunction-sections -fdata-sections -Itests/stubs -Isrc \
+    tests/app_input.c src/app.c -Wl,--gc-sections -o "$build_dir/app-input"
+"$build_dir/app-input"
