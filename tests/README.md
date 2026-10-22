@@ -35,6 +35,10 @@ HTTP, PS2 sleep, and UI drawing are mocked; these are not socket or hardware tes
 - D-pad navigation through all 256 entries in both directions, opening each
   correct detail ID, returning with the selection visible, at most eight
   rendered rows, three-digit counts, empty seasons, and music selection at 255.
+- Title/duration column bounds for short and long titles (including unbroken
+  and Latin-1 text), standard/wide layouts, selected/unselected rows, and music
+  as well as episodes. Titles use the existing one-line wrapping helper with
+  a 12-unit gap before the measured duration; source titles remain unchanged.
 
 Before the fix, the loader failed the harness's assertion that episode requests
 carry `Limit` and `StartIndex`.
@@ -79,8 +83,9 @@ runtime conversion shared with episodes.
 ## Remaining hardware checks and limits
 
 The user reports that their largest season, approximately 50 episodes, loaded
-on PS2 hardware without issues. Larger seasons and the remaining hardware
-checks are unverified: open episodes 33/100/256 where available, return from
+on PS2 hardware without issues, and confirmed that the title/duration overlap
+is fixed on hardware. Larger seasons and the remaining hardware checks are
+unverified: open episodes 33/100/256 where available, return from
 detail, and play both an episode and a music album while checking UI
 responsiveness and free memory. Capture the requests/responses to verify
 ordering and complete pages.

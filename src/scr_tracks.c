@@ -237,12 +237,15 @@ static void draw(void)
 		snprintf(num, sizeof(num), "%02d", i + 1);
 		ui_text(56, y, 1.0f, on ? C_PURPLE : C_RULE, num);
 
-		ui_text(92, y, 1.0f, on ? C_WHITE : C_DIM, jf_tracks[i].name);
-
 		char dur[16];
 		snprintf(dur, sizeof(dur), "%d:%02d",
 		         jf_tracks[i].seconds / 60, jf_tracks[i].seconds % 60);
-		ui_text(SCR_W - 56 - ui_text_w(1.0f, dur), y, 1.0f, C_DIM, dur);
+		float dur_x = SCR_W - 56 - ui_text_w(1.0f, dur);
+
+		/* Keep long titles on one row, clear of the right-aligned runtime. */
+		ui_wrap(92, y, ROW_H, 1.0f, on ? C_WHITE : C_DIM,
+		        jf_tracks[i].name, dur_x - 92 - 12, 1);
+		ui_text(dur_x, y, 1.0f, C_DIM, dur);
 	}
 
 	{
